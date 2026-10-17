@@ -46,6 +46,7 @@ impl App for Counter {
             greeting,
         ])
         .spacing(Space::Md)
+        .screen_title("Counter")
     }
 }
 
@@ -72,6 +73,6 @@ mod tests {
             row([button("Add").primary().on_press("add"), button("Reset")]).spacing(Space::Sm),
             input("").placeholder("Your name").on_change("name"),
             text("What's your name?").dim(),
-        ]).spacing(Space::Md));
+        ]).spacing(Space::Md).screen_title("Counter"));
     }
 }

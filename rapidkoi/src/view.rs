@@ -50,9 +50,15 @@ impl View {
         self
     }
 
-    /// A text: a view's title.
+    /// A text: styled as a view's title.
     pub fn title(self) -> View {
         self.prop("style", "title")
+    }
+
+    /// The screen's title, on the root node: Rapidkoi shows it in the tab,
+    /// the window title and "Where you left off".
+    pub fn screen_title(self, title: &str) -> View {
+        self.prop("title", title)
     }
 
     /// A text: a section heading.
@@ -197,6 +203,11 @@ mod tests {
         ]
         .concat();
         assert_eq!(hex(&column([text("a")]).spacing(Space::Md).encode()), expected);
+    }
+
+    #[test]
+    fn a_screen_title_is_a_root_prop() {
+        assert_eq!(column([]).screen_title("Inbox"), View { props: alloc::vec![("title", String::from("Inbox"))], ..column([]) });
     }
 
     #[test]
