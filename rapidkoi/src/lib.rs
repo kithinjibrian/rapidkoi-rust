@@ -1,18 +1,22 @@
-//! Write Rapidkoi apps in Rust (UI contract v2).
+//! Write Rapidkoi apps in Rust.
 //!
-//! An app is three pure functions over its state: [`App::init`],
-//! [`App::update`] and [`App::view`]. Rapidkoi holds the state between
-//! calls, as CBOR bytes, so the state type derives minicbor's `Encode` and
-//! `Decode`. [`export!`] writes the WebAssembly exports the shell calls.
+//! An app is two functions over its state: [`App::handle`], which answers
+//! everything that happens (an [`Event`]: a fresh start, being opened, its
+//! own messages, Rapidkoi's answers), and [`App::view`], what's on screen.
+//! Rapidkoi holds the state between calls, as CBOR bytes, so the state type
+//! derives minicbor's `Encode` and `Decode`, and `Default` (the start of a
+//! fresh run). [`export!`] writes the WebAssembly exports the shell calls.
 //!
 //! ```ignore
-//! #[derive(minicbor::Encode, minicbor::Decode)]
+//! #[derive(Default, minicbor::Encode, minicbor::Decode)]
 //! struct Counter { #[n(0)] count: i64 }
 //!
 //! impl rapidkoi::App for Counter {
-//!     fn init() -> Self { Counter { count: 0 } }
-//!     fn update(self, msg: &str, _value: Option<&str>) -> Self {
-//!         match msg { "add" => Counter { count: self.count + 1 }, _ => self }
+//!     fn handle(self, event: rapidkoi::Event) -> (Self, Vec<rapidkoi::Ask>) {
+//!         match event {
+//!             rapidkoi::Event::Message { msg, .. } if msg == "add" => (Counter { count: self.count + 1 }, vec![]),
+//!             _ => (self, vec![]),
+//!         }
 //!     }
 //!     fn view(&self) -> rapidkoi::View {
 //!         rapidkoi::button("Add").on_press("add")
@@ -22,14 +26,11 @@
 //! rapidkoi::export!(Counter);
 //! ```
 //!
-//! In this version of the crate, messages are text.
-//!
-//! Contract v2 adds two things. An app can ask Rapidkoi for its own key
-//! for the person ([`Ask::identity`]) or a sign-in signature
-//! ([`Ask::sign`]), from [`App::start`] or [`App::step`]; the reply comes
-//! to [`App::answer`]. And text can hold [`FIRST_NAME`] and [`LAST_NAME`]:
-//! Rapidkoi fills in the person's name while drawing, so the app shows it
-//! without ever knowing it.
+//! An app can ask Rapidkoi for its own key for the person
+//! ([`Ask::identity`]) or a sign-in signature ([`Ask::sign`]) from any
+//! event, usually [`Event::Opened`]; the reply is an [`Event::Answer`]. Text
+//! can hold [`FIRST_NAME`] and [`LAST_NAME`]: Rapidkoi fills in the
+//! person's name while drawing, so the app shows it without ever knowing it.
 
 #![cfg_attr(not(test), no_std)]
 extern crate alloc;
@@ -37,7 +38,7 @@ extern crate alloc;
 mod abi;
 mod view;
 
-pub use abi::{Event, Payload, __alloc, __finish, __input, __CONTRACT_VERSION};
+pub use abi::{Event, __alloc, __finish, __input, __CONTRACT_VERSION};
 pub use view::{button, column, input, row, text, Space, View};
 use alloc::string::String;
 use alloc::vec::Vec;
@@ -67,32 +68,16 @@ impl Ask {
     }
 }
 
-/// A Rapidkoi app: its state, and how messages change it.
-pub trait App: Sized + minicbor::Encode<()> + for<'b> minicbor::Decode<'b, ()> {
-    /// The first state.
-    fn init() -> Self;
-    /// The next state after `msg`; `value` is an input's new text.
-    fn update(self, msg: &str, value: Option<&str>) -> Self;
+/// A Rapidkoi app: its state, how events change it, and what it shows.
+pub trait App: Sized + Default + minicbor::Encode<()> + for<'b> minicbor::Decode<'b, ()> {
+    /// The next state after `event`, and what to ask Rapidkoi for.
+    fn handle(self, event: Event) -> (Self, Vec<Ask>);
     /// What's on screen in this state.
     fn view(&self) -> View;
-    /// The first state and what to ask Rapidkoi for; [`App::init`] and nothing by default.
-    fn start() -> (Self, Vec<Ask>) {
-        (Self::init(), Vec::new())
-    }
-    /// [`App::update`], able to ask for things too; asks for nothing by default.
-    fn step(self, msg: &str, value: Option<&str>) -> (Self, Vec<Ask>) {
-        (self.update(msg, value), Vec::new())
-    }
-    /// Rapidkoi's reply to an [`Ask`] sent with `msg`: the bytes, or `None`
-    /// (not signed in, or an unsigned app). Ignored by default.
-    fn answer(self, msg: &str, value: Option<&[u8]>) -> (Self, Vec<Ask>) {
-        let _ = (msg, value);
-        (self, Vec::new())
-    }
 }
 
-/// Writes the exports contract v2 needs (`rapidkoi_version`, `alloc`,
-/// `init`, `update`, `view`) for the app type `$app`.
+/// Writes the exports the contract needs (`rapidkoi_version`, `alloc`,
+/// `handle`, `view`) for the app type `$app`.
 #[macro_export]
 macro_rules! export {
     ($app:ty) => {
@@ -107,15 +92,10 @@ macro_rules! export {
         }
 
         #[no_mangle]
-        pub extern "C" fn init() -> i64 {
-            $crate::__finish($crate::abi_init::<$app>())
-        }
-
-        #[no_mangle]
-        pub extern "C" fn update(sp: i32, sl: i32, ep: i32, el: i32) -> i64 {
+        pub extern "C" fn handle(sp: i32, sl: i32, ep: i32, el: i32) -> i64 {
             let state = $crate::__input(sp, sl);
             let event = $crate::__input(ep, el);
-            $crate::__finish($crate::abi_update::<$app>(state, event))
+            $crate::__finish($crate::abi_handle::<$app>(state, event))
         }
 
         #[no_mangle]
@@ -127,4 +107,4 @@ macro_rules! export {
 }
 
 #[doc(hidden)]
-pub use abi::{abi_init, abi_update, abi_view};
+pub use abi::{abi_handle, abi_view};

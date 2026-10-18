@@ -1,6 +1,6 @@
-//! The calling convention of contract v2: bytes in through `alloc`, bytes
+//! The calling convention of the contract (version 2): bytes in through `alloc`, bytes
 //! out as (pointer, length) packed in an i64, and the CBOR of the event
-//! envelope and the `{state, effects}` result of `init` and `update`.
+//! events and the `{state, effects}` result of `handle`.
 //!
 //! Memory: every buffer handed to or returned from Rapidkoi lives in `LIVE`
 //! until the first `alloc` after an export has returned. By then Rapidkoi
@@ -63,52 +63,52 @@ pub fn __finish(out: Vec<u8>) -> i64 {
     packed as i64
 }
 
-/// What came with a message: an input's text, or Rapidkoi's answer to an
-/// [`Ask`] (bytes, or nothing when you aren't signed in).
+/// Something that happened, for [`App::handle`]. More kinds will come
+/// (closing, going to the background), so match with a `_` arm.
 #[derive(Debug, PartialEq, Eq)]
-pub enum Payload {
-    /// A plain event: a button's press.
-    None,
-    /// An input's new text.
-    Text(String),
-    /// Rapidkoi's answer: a public key or a signature.
-    Bytes(Vec<u8>),
-    /// Rapidkoi's answer when there's nothing to give (not signed in, an unsigned app).
-    Null,
-}
-
-/// One message, decoded from the envelope `{ "msg": text, "value"?: … }`.
-#[derive(Debug, PartialEq, Eq)]
-pub struct Event {
-    pub msg: String,
-    pub value: Payload,
+#[non_exhaustive]
+pub enum Event {
+    /// A fresh start: make the first state from `Default`.
+    Init,
+    /// Every time the app is opened, fresh or resumed: ask here for what you need.
+    Opened,
+    /// One of your own messages (a click, typing); `value` is an input's text.
+    Message { msg: String, value: Option<String> },
+    /// Rapidkoi's reply to an [`crate::Ask`] sent with `msg`: the bytes, or
+    /// `None` (not signed in, or an unsigned app).
+    Answer { msg: String, value: Option<Vec<u8>> },
 }
 
 impl Event {
-    /// Decodes an envelope; anything unexpected is `None`.
+    /// Decodes an event `{ "event": …, … }`; anything unexpected (or a kind
+    /// this version doesn't know) is `None`.
     pub fn decode(bytes: &[u8]) -> Option<Event> {
         let mut d = Decoder::new(bytes);
         let n = d.map().ok()??;
+        let mut kind = None;
         let mut msg = None;
-        let mut value = Payload::None;
+        let mut text = None;
+        let mut blob = None;
         for _ in 0..n {
             match d.str().ok()? {
+                "event" => kind = Some(String::from(d.str().ok()?)),
                 "msg" => msg = Some(String::from(d.str().ok()?)),
-                "value" => {
-                    value = match d.datatype().ok()? {
-                        minicbor::data::Type::String => Payload::Text(String::from(d.str().ok()?)),
-                        minicbor::data::Type::Bytes => Payload::Bytes(d.bytes().ok()?.to_vec()),
-                        minicbor::data::Type::Null => {
-                            d.null().ok()?;
-                            Payload::Null
-                        }
-                        _ => return None,
-                    }
-                }
+                "value" => match d.datatype().ok()? {
+                    minicbor::data::Type::String => text = Some(String::from(d.str().ok()?)),
+                    minicbor::data::Type::Bytes => blob = Some(d.bytes().ok()?.to_vec()),
+                    minicbor::data::Type::Null => d.null().ok()?,
+                    _ => return None,
+                },
                 _ => d.skip().ok()?,
             }
         }
-        Some(Event { msg: msg?, value })
+        match kind?.as_str() {
+            "init" => Some(Event::Init),
+            "opened" => Some(Event::Opened),
+            "message" => Some(Event::Message { msg: msg?, value: text }),
+            "answer" => Some(Event::Answer { msg: msg?, value: blob }),
+            _ => None,
+        }
     }
 }
 
@@ -119,26 +119,24 @@ fn save<A: App>(app: &A) -> Vec<u8> {
 fn load<A: App>(state: &[u8]) -> A {
     // Rapidkoi only ever hands back state this app made; if it can't be
     // read, starting over is the safest answer.
-    minicbor::decode(state).unwrap_or_else(|_| A::init())
+    minicbor::decode(state).unwrap_or_default()
 }
 
 #[doc(hidden)]
-pub fn abi_init<A: App>() -> Vec<u8> {
-    let (first, asks) = A::start();
-    result(&first, &asks)
-}
-
-#[doc(hidden)]
-pub fn abi_update<A: App>(state: &[u8], event: &[u8]) -> Vec<u8> {
-    let app = load::<A>(state);
-    let (next, asks) = match Event::decode(event) {
-        Some(Event { msg, value: Payload::Bytes(b) }) => app.answer(&msg, Some(&b)),
-        Some(Event { msg, value: Payload::Null }) => app.answer(&msg, None),
-        Some(Event { msg, value: Payload::Text(t) }) => app.step(&msg, Some(&t)),
-        Some(Event { msg, value: Payload::None }) => app.step(&msg, None),
-        None => (app, Vec::new()),
-    };
-    result(&next, &asks)
+pub fn abi_handle<A: App>(state: &[u8], event: &[u8]) -> Vec<u8> {
+    match Event::decode(event) {
+        // A fresh start has no state yet: begin from Default.
+        Some(Event::Init) => {
+            let (next, asks) = A::default().handle(Event::Init);
+            result(&next, &asks)
+        }
+        Some(e) => {
+            let (next, asks) = load::<A>(state).handle(e);
+            result(&next, &asks)
+        }
+        // A kind of event this app doesn't know: nothing changes.
+        None => result(&load::<A>(state), &[]),
+    }
 }
 
 /// `{"state": <bytes>, "effects": [...]}`; writing to a Vec never fails.
@@ -173,10 +171,26 @@ mod tests {
     use super::*;
 
     #[test]
-    fn an_envelope_decodes() {
-        // {"msg": "name", "value": "Amina"}
-        let bytes = [0xa2, 0x63, b'm', b's', b'g', 0x64, b'n', b'a', b'm', b'e', 0x65, b'v', b'a', b'l', b'u', b'e', 0x65, b'A', b'm', b'i', b'n', b'a'];
-        assert_eq!(Event::decode(&bytes), Some(Event { msg: "name".into(), value: Payload::Text("Amina".into()) }));
+    fn events_decode() {
+        let enc = |pairs: &[(&str, &dyn Fn(&mut Encoder<Vec<u8>>))]| {
+            let mut e = Encoder::new(Vec::new());
+            e.map(pairs.len() as u64).unwrap();
+            for (k, f) in pairs {
+                e.str(k).unwrap();
+                f(&mut e);
+            }
+            e.into_writer()
+        };
+        let init = enc(&[("event", &|e| { e.str("init").unwrap(); })]);
+        assert_eq!(Event::decode(&init), Some(Event::Init));
+        let msg = enc(&[("event", &|e| { e.str("message").unwrap(); }), ("msg", &|e| { e.str("name").unwrap(); }), ("value", &|e| { e.str("Amina").unwrap(); })]);
+        assert_eq!(Event::decode(&msg), Some(Event::Message { msg: "name".into(), value: Some("Amina".into()) }));
+        let ans = enc(&[("event", &|e| { e.str("answer").unwrap(); }), ("msg", &|e| { e.str("me").unwrap(); }), ("value", &|e| { e.bytes(&[1, 2]).unwrap(); })]);
+        assert_eq!(Event::decode(&ans), Some(Event::Answer { msg: "me".into(), value: Some(alloc::vec![1, 2]) }));
+        let none = enc(&[("event", &|e| { e.str("answer").unwrap(); }), ("msg", &|e| { e.str("me").unwrap(); }), ("value", &|e| { e.null().unwrap(); })]);
+        assert_eq!(Event::decode(&none), Some(Event::Answer { msg: "me".into(), value: None }));
+        let later = enc(&[("event", &|e| { e.str("closing").unwrap(); })]);
+        assert_eq!(Event::decode(&later), None);
         assert_eq!(Event::decode(&[0x80]), None);
     }
 
@@ -193,26 +207,15 @@ mod tests {
     }
 
     #[test]
-    fn answers_decode_as_bytes_or_null() {
-        // {"msg": "me", "value": h'0102'}
-        let bytes = [0xa2, 0x63, b'm', b's', b'g', 0x62, b'm', b'e', 0x65, b'v', b'a', b'l', b'u', b'e', 0x42, 1, 2];
-        assert_eq!(Event::decode(&bytes), Some(Event { msg: "me".into(), value: Payload::Bytes(alloc::vec![1, 2]) }));
-        // {"msg": "me", "value": null}
-        let null = [0xa2, 0x63, b'm', b's', b'g', 0x62, b'm', b'e', 0x65, b'v', b'a', b'l', b'u', b'e', 0xf6];
-        assert_eq!(Event::decode(&null), Some(Event { msg: "me".into(), value: Payload::Null }));
-    }
-
-    #[test]
     fn asks_encode_as_v2_effects() {
         // Decode what `result` wrote and read the effects back.
-        #[derive(minicbor::Encode, minicbor::Decode)]
+        #[derive(Default, minicbor::Encode, minicbor::Decode)]
         struct S {
             #[n(0)]
             n: i64,
         }
         impl App for S {
-            fn init() -> Self { S { n: 0 } }
-            fn update(self, _: &str, _: Option<&str>) -> Self { self }
+            fn handle(self, _: Event) -> (Self, Vec<Ask>) { (self, Vec::new()) }
             fn view(&self) -> crate::View { crate::text("") }
         }
         let bytes = result(&S { n: 1 }, &[Ask::identity("me"), Ask::sign("go", &[7, 8])]);

@@ -4,9 +4,9 @@
 //! `guest/rust/`, then `./main guest/rust/target/wasm32-unknown-unknown/release/counter.wasm`.
 
 use minicbor::{Decode, Encode};
-use rapidkoi::{button, column, input, row, text, App, Ask, Space, View, FIRST_NAME};
+use rapidkoi::{button, column, input, row, text, App, Ask, Event, Space, View, FIRST_NAME};
 
-#[derive(Encode, Decode)]
+#[derive(Default, Encode, Decode)]
 struct Counter {
     #[n(0)]
     count: i64,
@@ -27,28 +27,22 @@ fn label(key: &[u8]) -> String {
 }
 
 impl App for Counter {
-    fn init() -> Self {
-        Counter { count: 0, name: String::new(), me: None }
-    }
-
-    // Ask Rapidkoi who you are to this app, as soon as it starts.
-    fn start() -> (Self, Vec<Ask>) {
-        (Self::init(), vec![Ask::identity("me")])
-    }
-
-    fn answer(self, msg: &str, value: Option<&[u8]>) -> (Self, Vec<Ask>) {
-        match msg {
-            "me" => (Counter { me: value.map(|k| k.to_vec()), ..self }, Vec::new()),
-            _ => (self, Vec::new()),
-        }
-    }
-
-    fn update(self, msg: &str, value: Option<&str>) -> Self {
-        match msg {
-            "add" => Counter { count: self.count + 1, ..self },
-            "reset" => Counter { count: 0, ..self },
-            "name" => Counter { name: value.unwrap_or("").to_string(), ..self },
-            _ => self,
+    fn handle(self, event: Event) -> (Self, Vec<Ask>) {
+        match event {
+            // Every open, fresh or resumed: ask Rapidkoi who you are to this app.
+            Event::Opened => (self, vec![Ask::identity("me")]),
+            Event::Answer { msg, value } if msg == "me" => (Counter { me: value, ..self }, vec![]),
+            Event::Message { msg, value } => (
+                match msg.as_str() {
+                    "add" => Counter { count: self.count + 1, ..self },
+                    "reset" => Counter { count: 0, ..self },
+                    "name" => Counter { name: value.unwrap_or_default(), ..self },
+                    _ => self,
+                },
+                vec![],
+            ),
+            // Init (Default is the start), and events this version doesn't use.
+            _ => (self, vec![]),
         }
     }
 
@@ -87,17 +81,21 @@ rapidkoi::export!(Counter);
 mod tests {
     use super::*;
 
+    fn message(c: Counter, msg: &str, value: Option<&str>) -> Counter {
+        c.handle(Event::Message { msg: msg.into(), value: value.map(String::from) }).0
+    }
+
     #[test]
     fn add_reset_and_name() {
-        let c = Counter::init().update("add", None).update("add", None);
+        let c = message(message(Counter::default(), "add", None), "add", None);
         assert_eq!(c.count, 2);
-        let c = c.update("name", Some("Amina")).update("reset", None);
+        let c = message(message(c, "name", Some("Amina")), "reset", None);
         assert_eq!((c.count, c.name.as_str()), (0, "Amina"));
     }
 
     #[test]
     fn reset_is_disabled_at_zero() {
-        let v = Counter::init().view();
+        let v = Counter::default().view();
         assert_eq!(v, column([
             text("Counter").title(),
             text("Count: 0"),
@@ -109,12 +107,12 @@ mod tests {
     }
 
     #[test]
-    fn it_asks_who_you_are_and_shows_the_answer() {
-        let (c, asks) = Counter::start();
+    fn it_asks_who_you_are_on_every_open() {
+        let (c, asks) = Counter::default().handle(Event::Opened);
         assert_eq!(asks, vec![Ask::identity("me")]);
-        let (c, _) = c.answer("me", Some(&[0x4f, 0x9a, 1, 2]));
+        let (c, _) = c.handle(Event::Answer { msg: "me".into(), value: Some(vec![0x4f, 0x9a, 1, 2]) });
         assert_eq!(label(c.me.as_deref().unwrap()), "User 4f9a");
-        let (c, _) = c.answer("me", None);
-        assert_eq!(c.me, None);
+        // Resumed later: it asks again.
+        assert_eq!(c.handle(Event::Opened).1, vec![Ask::identity("me")]);
     }
 }
