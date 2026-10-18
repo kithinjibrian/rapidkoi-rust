@@ -1,0 +1,16 @@
+# The counter, as a signed app. Paths are relative to this file.
+# ./main keygen, then ./main publish, then ./main serve site/
+[app]
+name = "Counter"
+version = "0.2.0"
+description = "Counts, and says hello"
+# Development: the host is the address it's served at.
+host = "localhost:8000"
+module = "guest/rust/target/wasm32-unknown-unknown/release/counter.wasm"
+icon = "guest/rust/counter/icon.png"
+
+[publish]
+# Never inside this folder: keygen refuses.
+key = "~/.config/rapidkoi/keys/counter.key"
+site = "site"
+keep = 3
