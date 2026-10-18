@@ -1,5 +1,5 @@
 [workspace]
-members = ["rapidkoi", "counter"]
+members = ["rapidkoi", "counter", "quote"]
 resolver = "2"
 
 [profile.release]
