@@ -2,7 +2,7 @@
 # ./main keygen, then ./main publish, then ./main serve site/
 [app]
 name = "Counter"
-version = "0.2.0"
+version = "0.3.0"
 description = "Counts, and says hello"
 # Development: the host is the address it's served at.
 host = "localhost:8000"
