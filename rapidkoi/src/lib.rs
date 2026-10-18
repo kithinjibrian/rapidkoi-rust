@@ -31,14 +31,22 @@
 //! event, usually [`Event::Opened`]; the reply is an [`Event::Answer`]. Text
 //! can hold [`FIRST_NAME`] and [`LAST_NAME`]: Rapidkoi fills in the
 //! person's name while drawing, so the app shows it without ever knowing it.
+//!
+//! An app can reach its own server and the servers it declares with
+//! [`Ask::fetch`]; the reply is an [`Event::Response`] or [`Event::Failed`].
+//! [`SignIn`] signs in to the app's own server with the person's key.
 
 #![cfg_attr(not(test), no_std)]
 extern crate alloc;
 
 mod abi;
+mod fetch;
+mod signin;
 mod view;
 
 pub use abi::{Event, __alloc, __finish, __input, __CONTRACT_VERSION};
+pub use fetch::{header, Request};
+pub use signin::{Progress, SignIn};
 pub use view::{button, column, input, row, text, Space, View};
 use alloc::string::String;
 use alloc::vec::Vec;
@@ -48,13 +56,15 @@ pub const FIRST_NAME: &str = "{FIRST_NAME}";
 /// Shown as the person's last name, filled in by Rapidkoi while drawing.
 pub const LAST_NAME: &str = "{LAST_NAME}";
 
-/// Something to ask Rapidkoi for. The reply comes to [`App::answer`] with `msg`.
+/// Something to ask Rapidkoi for. The reply comes to [`App::handle`] as an event with `msg`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Ask {
     /// This app's own public key for the person (32 bytes): a stable ID meaning nothing elsewhere.
     Identity(String),
     /// A sign-in signature (64 bytes) over the app's verified host and this challenge (1–1024 bytes).
     Sign(String, Vec<u8>),
+    /// A request to the app's own server or one it declares.
+    Fetch(String, Request),
 }
 
 impl Ask {
@@ -65,6 +75,10 @@ impl Ask {
     /// Asks for a sign-in signature over `challenge`.
     pub fn sign(msg: &str, challenge: &[u8]) -> Ask {
         Ask::Sign(msg.into(), challenge.to_vec())
+    }
+    /// Asks Rapidkoi to send `request`.
+    pub fn fetch(msg: &str, request: Request) -> Ask {
+        Ask::Fetch(msg.into(), request)
     }
 }
 

@@ -74,9 +74,44 @@ pub enum Event {
     Opened,
     /// One of your own messages (a click, typing); `value` is an input's text.
     Message { msg: String, value: Option<String> },
-    /// Rapidkoi's reply to an [`crate::Ask`] sent with `msg`: the bytes, or
-    /// `None` (not signed in, or an unsigned app).
+    /// Rapidkoi's reply to an identity or sign [`crate::Ask`] sent with
+    /// `msg`: the bytes, or `None` (not signed in, or an unsigned app).
     Answer { msg: String, value: Option<Vec<u8>> },
+    /// A fetch's response (any status, a redirect included): header names in lower case.
+    Response { msg: String, status: u16, headers: Vec<(String, String)>, body: Vec<u8> },
+    /// A fetch that wasn't sent or didn't come back, and Rapidkoi's sentence why.
+    Failed { msg: String, error: String },
+}
+
+/// A fetch's answer value: `{status, headers, body}` or `{error}`.
+enum Reply {
+    Got(u16, Vec<(String, String)>, Vec<u8>),
+    Error(String),
+}
+
+fn reply(d: &mut Decoder) -> Option<Reply> {
+    let n = d.map().ok()??;
+    let (mut status, mut headers, mut body, mut error) = (None, Vec::new(), Vec::new(), None);
+    for _ in 0..n {
+        match d.str().ok()? {
+            "status" => status = Some(d.u16().ok()?),
+            "headers" => {
+                let h = d.map().ok()??;
+                for _ in 0..h {
+                    let k = String::from(d.str().ok()?);
+                    headers.push((k, String::from(d.str().ok()?)));
+                }
+            }
+            "body" => body = d.bytes().ok()?.to_vec(),
+            "error" => error = Some(String::from(d.str().ok()?)),
+            _ => d.skip().ok()?,
+        }
+    }
+    match (error, status) {
+        (Some(e), _) => Some(Reply::Error(e)),
+        (None, Some(s)) => Some(Reply::Got(s, headers, body)),
+        _ => None,
+    }
 }
 
 impl Event {
@@ -89,6 +124,7 @@ impl Event {
         let mut msg = None;
         let mut text = None;
         let mut blob = None;
+        let mut fetched = None;
         for _ in 0..n {
             match d.str().ok()? {
                 "event" => kind = Some(String::from(d.str().ok()?)),
@@ -97,6 +133,9 @@ impl Event {
                     minicbor::data::Type::String => text = Some(String::from(d.str().ok()?)),
                     minicbor::data::Type::Bytes => blob = Some(d.bytes().ok()?.to_vec()),
                     minicbor::data::Type::Null => d.null().ok()?,
+                    minicbor::data::Type::Map | minicbor::data::Type::MapIndef => {
+                        fetched = Some(reply(&mut d)?)
+                    }
                     _ => return None,
                 },
                 _ => d.skip().ok()?,
@@ -106,7 +145,11 @@ impl Event {
             "init" => Some(Event::Init),
             "opened" => Some(Event::Opened),
             "message" => Some(Event::Message { msg: msg?, value: text }),
-            "answer" => Some(Event::Answer { msg: msg?, value: blob }),
+            "answer" => match fetched {
+                Some(Reply::Got(status, headers, body)) => Some(Event::Response { msg: msg?, status, headers, body }),
+                Some(Reply::Error(error)) => Some(Event::Failed { msg: msg?, error }),
+                None => Some(Event::Answer { msg: msg?, value: blob }),
+            },
             _ => None,
         }
     }
@@ -156,6 +199,7 @@ fn result<A: App>(app: &A, asks: &[Ask]) -> Vec<u8> {
                 let _ = e.str("msg").and_then(|e| e.str(msg));
                 let _ = e.str("challenge").and_then(|e| e.bytes(challenge));
             }
+            Ask::Fetch(msg, r) => r.encode_effect(msg, &mut e),
         }
     }
     e.into_writer()
@@ -189,6 +233,16 @@ mod tests {
         assert_eq!(Event::decode(&ans), Some(Event::Answer { msg: "me".into(), value: Some(alloc::vec![1, 2]) }));
         let none = enc(&[("event", &|e| { e.str("answer").unwrap(); }), ("msg", &|e| { e.str("me").unwrap(); }), ("value", &|e| { e.null().unwrap(); })]);
         assert_eq!(Event::decode(&none), Some(Event::Answer { msg: "me".into(), value: None }));
+        let got = enc(&[("event", &|e| { e.str("answer").unwrap(); }), ("msg", &|e| { e.str("q").unwrap(); }), ("value", &|e| {
+            e.map(3).unwrap().str("status").unwrap().u16(301).unwrap();
+            e.str("headers").unwrap().map(1).unwrap().str("location").unwrap().str("/x").unwrap();
+            e.str("body").unwrap().bytes(b"hi").unwrap();
+        })]);
+        assert_eq!(Event::decode(&got), Some(Event::Response { msg: "q".into(), status: 301, headers: alloc::vec![("location".into(), "/x".into())], body: b"hi".to_vec() }));
+        let failed = enc(&[("event", &|e| { e.str("answer").unwrap(); }), ("msg", &|e| { e.str("q").unwrap(); }), ("value", &|e| {
+            e.map(1).unwrap().str("error").unwrap().str("You turned off x for Notes").unwrap();
+        })]);
+        assert_eq!(Event::decode(&failed), Some(Event::Failed { msg: "q".into(), error: "You turned off x for Notes".into() }));
         let later = enc(&[("event", &|e| { e.str("closing").unwrap(); })]);
         assert_eq!(Event::decode(&later), None);
         assert_eq!(Event::decode(&[0x80]), None);
@@ -218,13 +272,14 @@ mod tests {
             fn handle(self, _: Event) -> (Self, Vec<Ask>) { (self, Vec::new()) }
             fn view(&self) -> crate::View { crate::text("") }
         }
-        let bytes = result(&S { n: 1 }, &[Ask::identity("me"), Ask::sign("go", &[7, 8])]);
+        let post = crate::Request::post("https://api.acme.com/n", &[1]).header("x-a", "b");
+        let bytes = result(&S { n: 1 }, &[Ask::identity("me"), Ask::sign("go", &[7, 8]), Ask::fetch("f", post)]);
         let mut d = Decoder::new(&bytes);
         assert_eq!(d.map().unwrap(), Some(2));
         assert_eq!(d.str().unwrap(), "state");
         d.bytes().unwrap();
         assert_eq!(d.str().unwrap(), "effects");
-        assert_eq!(d.array().unwrap(), Some(2));
+        assert_eq!(d.array().unwrap(), Some(3));
         assert_eq!(d.map().unwrap(), Some(2));
         assert_eq!((d.str().unwrap(), d.str().unwrap()), ("kind", "identity"));
         assert_eq!((d.str().unwrap(), d.str().unwrap()), ("msg", "me"));
@@ -232,5 +287,13 @@ mod tests {
         assert_eq!((d.str().unwrap(), d.str().unwrap()), ("kind", "sign"));
         assert_eq!((d.str().unwrap(), d.str().unwrap()), ("msg", "go"));
         assert_eq!((d.str().unwrap(), d.bytes().unwrap()), ("challenge", &[7u8, 8][..]));
+        assert_eq!(d.map().unwrap(), Some(6));
+        assert_eq!((d.str().unwrap(), d.str().unwrap()), ("kind", "fetch"));
+        assert_eq!((d.str().unwrap(), d.str().unwrap()), ("msg", "f"));
+        assert_eq!((d.str().unwrap(), d.str().unwrap()), ("method", "POST"));
+        assert_eq!((d.str().unwrap(), d.str().unwrap()), ("url", "https://api.acme.com/n"));
+        assert_eq!((d.str().unwrap(), d.map().unwrap()), ("headers", Some(1)));
+        assert_eq!((d.str().unwrap(), d.str().unwrap()), ("x-a", "b"));
+        assert_eq!((d.str().unwrap(), d.bytes().unwrap()), ("body", &[1u8][..]));
     }
 }
