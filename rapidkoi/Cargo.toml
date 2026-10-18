@@ -2,7 +2,7 @@
 name = "rapidkoi"
 version = "0.1.0"
 edition = "2021"
-description = "Write Rapidkoi apps in Rust: UI contract v1"
+description = "Write Rapidkoi apps in Rust: UI contract v2"
 license = "GPL-3.0-only"
 
 [dependencies]
