@@ -75,6 +75,9 @@ pub enum Event {
     /// Back at the front while running (its tab, or the new tab, shown again):
     /// ask again for what may have changed while it was away.
     Resume,
+    /// Something it may read changed while it's in front (your pins, where
+    /// you left off, one of its permission settings): ask again.
+    Change,
     /// One of your own messages (a click, typing); `value` is an input's text.
     Message { msg: String, value: Option<String> },
     /// Rapidkoi's reply to an identity or sign [`crate::Ask`] sent with
@@ -149,6 +152,7 @@ impl Event {
             "on_init" => Some(Event::Init),
             "on_open" => Some(Event::Opened),
             "on_resume" => Some(Event::Resume),
+            "on_change" => Some(Event::Change),
             "on_message" => {
                 let text = match value {
                     Some((minicbor::data::Type::String, a, b)) => Some(String::from(Decoder::new(raw((a, b))).str().ok()?)),
@@ -280,6 +284,8 @@ mod tests {
         assert_eq!(Event::decode(&failed), Some(Event::Failed { msg: "q".into(), error: "You turned off x for Notes".into() }));
         let resume = enc(&[("event", &|e| { e.str("on_resume").unwrap(); })]);
         assert_eq!(Event::decode(&resume), Some(Event::Resume));
+        let change = enc(&[("event", &|e| { e.str("on_change").unwrap(); })]);
+        assert_eq!(Event::decode(&change), Some(Event::Change));
         let open = enc(&[("event", &|e| { e.str("on_open").unwrap(); })]);
         assert_eq!(Event::decode(&open), Some(Event::Opened));
         let data = enc(&[("event", &|e| { e.str("on_answer").unwrap(); }), ("msg", &|e| { e.str("pins").unwrap(); }), ("value", &|e| { e.array(0).unwrap(); })]);
