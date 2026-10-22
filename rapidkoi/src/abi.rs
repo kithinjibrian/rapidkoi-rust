@@ -1,4 +1,4 @@
-//! The calling convention of the contract (version 2): bytes in through `alloc`, bytes
+//! The calling convention of the contract (version 3): bytes in through `alloc`, bytes
 //! out as (pointer, length) packed in an i64, and the CBOR of the event
 //! events and the `{state, effects}` result of `handle`.
 //!
@@ -16,7 +16,7 @@ use minicbor::{Decoder, Encoder};
 use crate::{App, Ask};
 
 #[doc(hidden)]
-pub const __CONTRACT_VERSION: i32 = 2;
+pub const __CONTRACT_VERSION: i32 = 3;
 
 struct Arena {
     live: Vec<Box<[u8]>>,
@@ -70,13 +70,20 @@ pub fn __finish(out: Vec<u8>) -> i64 {
 pub enum Event {
     /// A fresh start: make the first state from `Default`.
     Init,
-    /// Every time the app is opened, fresh or resumed: ask here for what you need.
+    /// Every time the app is opened, fresh or from saved state: ask here for what you need.
     Opened,
+    /// Back at the front while running (its tab, or the new tab, shown again):
+    /// ask again for what may have changed while it was away.
+    Resume,
     /// One of your own messages (a click, typing); `value` is an input's text.
     Message { msg: String, value: Option<String> },
     /// Rapidkoi's reply to an identity or sign [`crate::Ask`] sent with
-    /// `msg`: the bytes, or `None` (not signed in, or an unsigned app).
+    /// `msg`: the bytes, or `None` (not signed in, or an unsigned app, or
+    /// nothing left off).
     Answer { msg: String, value: Option<Vec<u8>> },
+    /// Rapidkoi's reply to a read ([`crate::Ask::pins`], [`crate::Ask::left_off`])
+    /// sent with `msg`, as CBOR: read it with [`crate::Place`].
+    Data { msg: String, cbor: Vec<u8> },
     /// A fetch's response (any status, a redirect included): header names in lower case.
     Response { msg: String, status: u16, headers: Vec<(String, String)>, body: Vec<u8> },
     /// A fetch that wasn't sent or didn't come back, and Rapidkoi's sentence why.
@@ -115,41 +122,55 @@ fn reply(d: &mut Decoder) -> Option<Reply> {
 }
 
 impl Event {
-    /// Decodes an event `{ "event": …, … }`; anything unexpected (or a kind
-    /// this version doesn't know) is `None`.
+    /// Decodes an event `{ "event": …, … }` (contract 3's `on_` names);
+    /// anything unexpected (or a kind this version doesn't know) is `None`.
     pub fn decode(bytes: &[u8]) -> Option<Event> {
         let mut d = Decoder::new(bytes);
         let n = d.map().ok()??;
         let mut kind = None;
         let mut msg = None;
-        let mut text = None;
-        let mut blob = None;
-        let mut fetched = None;
+        let mut value: Option<(minicbor::data::Type, usize, usize)> = None;
         for _ in 0..n {
             match d.str().ok()? {
                 "event" => kind = Some(String::from(d.str().ok()?)),
                 "msg" => msg = Some(String::from(d.str().ok()?)),
-                "value" => match d.datatype().ok()? {
-                    minicbor::data::Type::String => text = Some(String::from(d.str().ok()?)),
-                    minicbor::data::Type::Bytes => blob = Some(d.bytes().ok()?.to_vec()),
-                    minicbor::data::Type::Null => d.null().ok()?,
-                    minicbor::data::Type::Map | minicbor::data::Type::MapIndef => {
-                        fetched = Some(reply(&mut d)?)
-                    }
-                    _ => return None,
-                },
+                "value" => {
+                    // Kept as its span: what it means depends on the event.
+                    let t = d.datatype().ok()?;
+                    let start = d.position();
+                    d.skip().ok()?;
+                    value = Some((t, start, d.position()));
+                }
                 _ => d.skip().ok()?,
             }
         }
+        let raw = |span: (usize, usize)| &bytes[span.0..span.1];
         match kind?.as_str() {
-            "init" => Some(Event::Init),
-            "opened" => Some(Event::Opened),
-            "message" => Some(Event::Message { msg: msg?, value: text }),
-            "answer" => match fetched {
-                Some(Reply::Got(status, headers, body)) => Some(Event::Response { msg: msg?, status, headers, body }),
-                Some(Reply::Error(error)) => Some(Event::Failed { msg: msg?, error }),
-                None => Some(Event::Answer { msg: msg?, value: blob }),
+            "on_init" => Some(Event::Init),
+            "on_open" => Some(Event::Opened),
+            "on_resume" => Some(Event::Resume),
+            "on_message" => {
+                let text = match value {
+                    Some((minicbor::data::Type::String, a, b)) => Some(String::from(Decoder::new(raw((a, b))).str().ok()?)),
+                    None => None,
+                    Some(_) => return None,
+                };
+                Some(Event::Message { msg: msg?, value: text })
+            }
+            "on_answer" => match value {
+                Some((minicbor::data::Type::Bytes, a, b)) => {
+                    Some(Event::Answer { msg: msg?, value: Some(Decoder::new(raw((a, b))).bytes().ok()?.to_vec()) })
+                }
+                Some((minicbor::data::Type::Null, _, _)) | None => Some(Event::Answer { msg: msg?, value: None }),
+                Some((_, a, b)) => Some(Event::Data { msg: msg?, cbor: raw((a, b)).to_vec() }),
             },
+            "on_response" | "on_fail" => {
+                let (_, a, b) = value?;
+                match reply(&mut Decoder::new(raw((a, b))))? {
+                    Reply::Got(status, headers, body) => Some(Event::Response { msg: msg?, status, headers, body }),
+                    Reply::Error(error) => Some(Event::Failed { msg: msg?, error }),
+                }
+            }
             _ => None,
         }
     }
@@ -200,9 +221,23 @@ fn result<A: App>(app: &A, asks: &[Ask]) -> Vec<u8> {
                 let _ = e.str("challenge").and_then(|e| e.bytes(challenge));
             }
             Ask::Fetch(msg, r) => r.encode_effect(msg, &mut e),
+            Ask::Pins(msg) => plain(&mut e, "pins", msg),
+            Ask::LeftOff(msg) => plain(&mut e, "left_off", msg),
+            Ask::ContinueLeftOff(msg) => plain(&mut e, "continue", msg),
+            Ask::OpenPin(msg, index) => {
+                let _ = e.map(3).and_then(|e| e.str("kind")).and_then(|e| e.str("open_pin"));
+                let _ = e.str("msg").and_then(|e| e.str(msg));
+                let _ = e.str("index").and_then(|e| e.u32(*index));
+            }
         }
     }
     e.into_writer()
+}
+
+/// An effect of only a kind and a msg.
+fn plain(e: &mut Encoder<Vec<u8>>, kind: &str, msg: &str) {
+    let _ = e.map(2).and_then(|e| e.str("kind")).and_then(|e| e.str(kind));
+    let _ = e.str("msg").and_then(|e| e.str(msg));
 }
 
 #[doc(hidden)]
@@ -225,25 +260,34 @@ mod tests {
             }
             e.into_writer()
         };
-        let init = enc(&[("event", &|e| { e.str("init").unwrap(); })]);
+        let init = enc(&[("event", &|e| { e.str("on_init").unwrap(); })]);
         assert_eq!(Event::decode(&init), Some(Event::Init));
-        let msg = enc(&[("event", &|e| { e.str("message").unwrap(); }), ("msg", &|e| { e.str("name").unwrap(); }), ("value", &|e| { e.str("Amina").unwrap(); })]);
+        let msg = enc(&[("event", &|e| { e.str("on_message").unwrap(); }), ("msg", &|e| { e.str("name").unwrap(); }), ("value", &|e| { e.str("Amina").unwrap(); })]);
         assert_eq!(Event::decode(&msg), Some(Event::Message { msg: "name".into(), value: Some("Amina".into()) }));
-        let ans = enc(&[("event", &|e| { e.str("answer").unwrap(); }), ("msg", &|e| { e.str("me").unwrap(); }), ("value", &|e| { e.bytes(&[1, 2]).unwrap(); })]);
+        let ans = enc(&[("event", &|e| { e.str("on_answer").unwrap(); }), ("msg", &|e| { e.str("me").unwrap(); }), ("value", &|e| { e.bytes(&[1, 2]).unwrap(); })]);
         assert_eq!(Event::decode(&ans), Some(Event::Answer { msg: "me".into(), value: Some(alloc::vec![1, 2]) }));
-        let none = enc(&[("event", &|e| { e.str("answer").unwrap(); }), ("msg", &|e| { e.str("me").unwrap(); }), ("value", &|e| { e.null().unwrap(); })]);
+        let none = enc(&[("event", &|e| { e.str("on_answer").unwrap(); }), ("msg", &|e| { e.str("me").unwrap(); }), ("value", &|e| { e.null().unwrap(); })]);
         assert_eq!(Event::decode(&none), Some(Event::Answer { msg: "me".into(), value: None }));
-        let got = enc(&[("event", &|e| { e.str("answer").unwrap(); }), ("msg", &|e| { e.str("q").unwrap(); }), ("value", &|e| {
+        let got = enc(&[("event", &|e| { e.str("on_response").unwrap(); }), ("msg", &|e| { e.str("q").unwrap(); }), ("value", &|e| {
             e.map(3).unwrap().str("status").unwrap().u16(301).unwrap();
             e.str("headers").unwrap().map(1).unwrap().str("location").unwrap().str("/x").unwrap();
             e.str("body").unwrap().bytes(b"hi").unwrap();
         })]);
         assert_eq!(Event::decode(&got), Some(Event::Response { msg: "q".into(), status: 301, headers: alloc::vec![("location".into(), "/x".into())], body: b"hi".to_vec() }));
-        let failed = enc(&[("event", &|e| { e.str("answer").unwrap(); }), ("msg", &|e| { e.str("q").unwrap(); }), ("value", &|e| {
+        let failed = enc(&[("event", &|e| { e.str("on_fail").unwrap(); }), ("msg", &|e| { e.str("q").unwrap(); }), ("value", &|e| {
             e.map(1).unwrap().str("error").unwrap().str("You turned off x for Notes").unwrap();
         })]);
         assert_eq!(Event::decode(&failed), Some(Event::Failed { msg: "q".into(), error: "You turned off x for Notes".into() }));
-        let later = enc(&[("event", &|e| { e.str("closing").unwrap(); })]);
+        let resume = enc(&[("event", &|e| { e.str("on_resume").unwrap(); })]);
+        assert_eq!(Event::decode(&resume), Some(Event::Resume));
+        let open = enc(&[("event", &|e| { e.str("on_open").unwrap(); })]);
+        assert_eq!(Event::decode(&open), Some(Event::Opened));
+        let data = enc(&[("event", &|e| { e.str("on_answer").unwrap(); }), ("msg", &|e| { e.str("pins").unwrap(); }), ("value", &|e| { e.array(0).unwrap(); })]);
+        assert_eq!(Event::decode(&data), Some(Event::Data { msg: "pins".into(), cbor: alloc::vec![0x80] }));
+        // Contract 2's names are another contract's: unknown here.
+        let old = enc(&[("event", &|e| { e.str("init").unwrap(); })]);
+        assert_eq!(Event::decode(&old), None);
+        let later = enc(&[("event", &|e| { e.str("on_pause").unwrap(); })]);
         assert_eq!(Event::decode(&later), None);
         assert_eq!(Event::decode(&[0x80]), None);
     }
@@ -261,7 +305,40 @@ mod tests {
     }
 
     #[test]
-    fn asks_encode_as_v2_effects() {
+    fn the_new_tabs_asks_encode() {
+        #[derive(Default, minicbor::Encode, minicbor::Decode)]
+        struct S {
+            #[n(0)]
+            n: i64,
+        }
+        impl App for S {
+            fn handle(self, _: Event) -> (Self, Vec<Ask>) { (self, Vec::new()) }
+            fn view(&self) -> crate::View { crate::text("") }
+        }
+        let asks = [Ask::pins("p"), Ask::left_off("l"), Ask::open_pin("o", 2), Ask::continue_left_off("c")];
+        let bytes = result(&S { n: 1 }, &asks);
+        let mut d = Decoder::new(&bytes);
+        d.map().unwrap();
+        d.str().unwrap();
+        d.bytes().unwrap();
+        d.str().unwrap();
+        assert_eq!(d.array().unwrap(), Some(4));
+        for (kind, msg) in [("pins", "p"), ("left_off", "l")] {
+            assert_eq!(d.map().unwrap(), Some(2));
+            assert_eq!((d.str().unwrap(), d.str().unwrap()), ("kind", kind));
+            assert_eq!((d.str().unwrap(), d.str().unwrap()), ("msg", msg));
+        }
+        assert_eq!(d.map().unwrap(), Some(3));
+        assert_eq!((d.str().unwrap(), d.str().unwrap()), ("kind", "open_pin"));
+        assert_eq!((d.str().unwrap(), d.str().unwrap()), ("msg", "o"));
+        assert_eq!((d.str().unwrap(), d.u32().unwrap()), ("index", 2));
+        assert_eq!(d.map().unwrap(), Some(2));
+        assert_eq!((d.str().unwrap(), d.str().unwrap()), ("kind", "continue"));
+        assert_eq!((d.str().unwrap(), d.str().unwrap()), ("msg", "c"));
+    }
+
+    #[test]
+    fn asks_encode_as_effects() {
         // Decode what `result` wrote and read the effects back.
         #[derive(Default, minicbor::Encode, minicbor::Decode)]
         struct S {

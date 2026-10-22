@@ -41,11 +41,13 @@ extern crate alloc;
 
 mod abi;
 mod fetch;
+mod home;
 mod signin;
 mod view;
 
 pub use abi::{Event, __alloc, __finish, __input, __CONTRACT_VERSION};
 pub use fetch::{header, Request};
+pub use home::Place;
 pub use signin::{Progress, SignIn};
 pub use view::{button, column, input, row, text, Space, View};
 use alloc::string::String;
@@ -65,6 +67,14 @@ pub enum Ask {
     Sign(String, Vec<u8>),
     /// A request to the app's own server or one it declares.
     Fetch(String, Request),
+    /// The person's pins (needs the built-in `read_pins` permission).
+    Pins(String),
+    /// Where the person left off (needs the built-in `read_left_off`).
+    LeftOff(String),
+    /// Open the person's pin at this index (needs the built-in `open_apps`); not answered.
+    OpenPin(String, u32),
+    /// Open where the person left off (needs the built-in `open_apps`); not answered.
+    ContinueLeftOff(String),
 }
 
 impl Ask {
@@ -79,6 +89,23 @@ impl Ask {
     /// Asks Rapidkoi to send `request`.
     pub fn fetch(msg: &str, request: Request) -> Ask {
         Ask::Fetch(msg.into(), request)
+    }
+    /// Asks for the person's pins: an [`Event::Data`] to read with [`Place::list`].
+    pub fn pins(msg: &str) -> Ask {
+        Ask::Pins(msg.into())
+    }
+    /// Asks where the person left off: an [`Event::Data`] to read with
+    /// [`Place::one`], or an [`Event::Answer`] with nothing.
+    pub fn left_off(msg: &str) -> Ask {
+        Ask::LeftOff(msg.into())
+    }
+    /// Asks Rapidkoi to open pin `index` of the person's pins as they are now.
+    pub fn open_pin(msg: &str, index: u32) -> Ask {
+        Ask::OpenPin(msg.into(), index)
+    }
+    /// Asks Rapidkoi to open where the person left off.
+    pub fn continue_left_off(msg: &str) -> Ask {
+        Ask::ContinueLeftOff(msg.into())
     }
 }
 
