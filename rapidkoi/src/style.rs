@@ -7,8 +7,10 @@
 //! ```
 //! use rapidkoi::raw::boxed;
 //! use rapidkoi::style::{Background, Border, Color, Corner, State, When};
+//! use rapidkoi::View;
 //!
-//! let card = boxed().style([
+//! // A box that sends nothing: its message type is the default, `String`.
+//! let card: View = boxed().style([
 //!     Background::color(Color::system("surface")),
 //!     Border::corner(Corner::Large),
 //!     When(State::Hover, [Background::color(Color::system("surface").mix(Color::system("text"), 0.1))]),
