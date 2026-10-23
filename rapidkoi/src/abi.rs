@@ -17,7 +17,7 @@ use crate::state::Link;
 use crate::{App, Ask, Message, Next};
 
 #[doc(hidden)]
-pub const __CONTRACT_VERSION: i32 = 5;
+pub const __CONTRACT_VERSION: i32 = 6;
 
 struct Arena {
     live: Vec<Box<[u8]>>,
@@ -66,7 +66,7 @@ pub fn __finish(out: Vec<u8>) -> i64 {
 
 /// Something that happened, for [`App::handle`]. More kinds will come
 /// (closing, going to the background), so match with a `_` arm.
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq)]
 #[non_exhaustive]
 pub enum Event<M = String> {
     /// A fresh start: make the first state from `Default`.
@@ -77,8 +77,10 @@ pub enum Event<M = String> {
     /// ask again for what may have changed while it was away.
     Resume,
     /// Something it may read changed while it's in front (your pins, where
-    /// you left off, one of its permission settings): ask again.
-    Change,
+    /// Something it may read changed while it's in front (your pins, where
+    /// you left off, one of its permission settings), or, with `tables`, its
+    /// data changed in another of its windows (contract 6): ask again.
+    Change { tables: Vec<String> },
     /// One of your own messages (a click, typing, PRP-039: typed); `value` is an input's text.
     Message { msg: M, value: Option<String> },
     /// Rapidkoi's reply to an identity or sign [`crate::Ask`] sent with
@@ -90,8 +92,12 @@ pub enum Event<M = String> {
     Data { msg: String, cbor: Vec<u8> },
     /// A fetch's response (any status, a redirect included): header names in lower case.
     Response { msg: String, status: u16, headers: Vec<(String, String)>, body: Vec<u8> },
-    /// A fetch that wasn't sent or didn't come back, and Rapidkoi's sentence why.
+    /// A fetch or a call to the app's database that didn't work, and Rapidkoi's sentence why.
     Failed { msg: String, error: String },
+    /// A read of the app's database (contract 6): its columns' names and its rows, and whether there were more.
+    Rows { msg: String, columns: Vec<String>, rows: Vec<Vec<crate::Value>>, cut: bool },
+    /// A write to the app's database: how many rows changed and the last rowid inserted.
+    Done { msg: String, changes: i64, last_rowid: i64 },
 }
 
 /// A fetch's answer value: `{status, headers, body}` or `{error}`.
@@ -135,6 +141,8 @@ impl<M: Message> Event<M> {
         let mut msg = None;
         // A message is the app's own type: kept as its bytes until the kind is known.
         let mut raw_msg: Option<(usize, usize)> = None;
+        // on_change's tables (contract 6), when its app's data changed.
+        let mut tables: Option<Vec<String>> = None;
         let mut value: Option<(minicbor::data::Type, usize, usize)> = None;
         for _ in 0..n {
             match d.str().ok()? {
@@ -148,6 +156,14 @@ impl<M: Message> Event<M> {
                         d.skip().ok()?;
                     }
                     raw_msg = Some((start, d.position()));
+                }
+                "tables" => {
+                    let n = d.array().ok()??;
+                    let mut names = Vec::new();
+                    for _ in 0..n {
+                        names.push(String::from(d.str().ok()?));
+                    }
+                    tables = Some(names);
                 }
                 "value" => {
                     // Kept as its span: what it means depends on the event.
@@ -164,7 +180,7 @@ impl<M: Message> Event<M> {
             "on_init" => Some(Event::Init),
             "on_open" => Some(Event::Opened),
             "on_resume" => Some(Event::Resume),
-            "on_change" => Some(Event::Change),
+            "on_change" => Some(Event::Change { tables: tables.unwrap_or_default() }),
             "on_message" => {
                 let text = match value {
                     Some((minicbor::data::Type::String, a, b)) => Some(String::from(Decoder::new(raw((a, b))).str().ok()?)),
@@ -179,7 +195,11 @@ impl<M: Message> Event<M> {
                     Some(Event::Answer { msg: msg?, value: Some(Decoder::new(raw((a, b))).bytes().ok()?.to_vec()) })
                 }
                 Some((minicbor::data::Type::Null, _, _)) | None => Some(Event::Answer { msg: msg?, value: None }),
-                Some((_, a, b)) => Some(Event::Data { msg: msg?, cbor: raw((a, b)).to_vec() }),
+                Some((_, a, b)) => match crate::storage::answered(raw((a, b))) {
+                    Some(crate::storage::Answered::Rows { columns, rows, cut }) => Some(Event::Rows { msg: msg?, columns, rows, cut }),
+                    Some(crate::storage::Answered::Done { changes, last_rowid }) => Some(Event::Done { msg: msg?, changes, last_rowid }),
+                    None => Some(Event::Data { msg: msg?, cbor: raw((a, b)).to_vec() }),
+                },
             },
             "on_response" | "on_fail" => {
                 let (_, a, b) = value?;
@@ -237,6 +257,27 @@ fn result<A: App>(next: &Next<A>) -> Vec<u8> {
             Ask::Session(msg) => plain(&mut e, "session", msg),
             Ask::RestoreSession(msg) => plain(&mut e, "restore_session", msg),
             Ask::Preferences(msg) => plain(&mut e, "preferences", msg),
+            Ask::Sql(msg, sql, params) => {
+                let _ = e.map(4).and_then(|e| e.str("kind")).and_then(|e| e.str("sql"));
+                let _ = e.str("msg").and_then(|e| e.str(msg));
+                let _ = e.str("sql").and_then(|e| e.str(sql));
+                let _ = e.str("params").and_then(|e| e.array(params.len() as u64));
+                for p in params {
+                    p.write(&mut e);
+                }
+            }
+            Ask::SqlBatch(msg, steps) => {
+                let _ = e.map(3).and_then(|e| e.str("kind")).and_then(|e| e.str("sql_batch"));
+                let _ = e.str("msg").and_then(|e| e.str(msg));
+                let _ = e.str("steps").and_then(|e| e.array(steps.len() as u64));
+                for (sql, params) in steps {
+                    let _ = e.map(2).and_then(|e| e.str("sql")).and_then(|e| e.str(sql));
+                    let _ = e.str("params").and_then(|e| e.array(params.len() as u64));
+                    for p in params {
+                        p.write(&mut e);
+                    }
+                }
+            }
             Ask::SetPreference(msg, p) => {
                 let _ = e.map(4).and_then(|e| e.str("kind")).and_then(|e| e.str("set_preference"));
                 let _ = e.str("msg").and_then(|e| e.str(msg));
@@ -323,7 +364,7 @@ mod tests {
         let resume = enc(&[("event", &|e| { e.str("on_resume").unwrap(); })]);
         assert_eq!(Event::<String>::decode(&resume), Some(Event::Resume));
         let change = enc(&[("event", &|e| { e.str("on_change").unwrap(); })]);
-        assert_eq!(Event::<String>::decode(&change), Some(Event::Change));
+        assert_eq!(Event::<String>::decode(&change), Some(Event::Change { tables: vec![] }));
         let open = enc(&[("event", &|e| { e.str("on_open").unwrap(); })]);
         assert_eq!(Event::<String>::decode(&open), Some(Event::Opened));
         let data = enc(&[("event", &|e| { e.str("on_answer").unwrap(); }), ("msg", &|e| { e.str("pins").unwrap(); }), ("value", &|e| { e.array(0).unwrap(); })]);

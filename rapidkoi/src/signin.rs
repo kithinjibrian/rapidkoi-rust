@@ -36,7 +36,7 @@ pub struct SignIn {
 }
 
 /// What one event did to a sign-in.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum Progress {
     /// Not a sign-in event: handle it yourself.
     NotMine,

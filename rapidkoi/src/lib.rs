@@ -55,6 +55,7 @@ mod prefs;
 mod signin;
 pub mod raw;
 mod state;
+mod storage;
 pub mod style;
 mod view;
 
@@ -62,6 +63,7 @@ pub use abi::{Event, __alloc, __finish, __input, __CONTRACT_VERSION};
 pub use fetch::{header, Request};
 pub use home::{Place, Session};
 pub use prefs::{Preference, Prefs};
+pub use storage::Value;
 pub use signin::{Progress, SignIn};
 pub use rapidkoi_derive::{Message, State};
 pub use message::Message;
@@ -82,7 +84,7 @@ pub const FIRST_NAME: &str = "{FIRST_NAME}";
 pub const LAST_NAME: &str = "{LAST_NAME}";
 
 /// Something to ask Rapidkoi for. The reply comes to [`App::handle`] as an event with `msg`.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum Ask {
     /// This app's own public key for the person (32 bytes): a stable ID meaning nothing elsewhere.
     Identity(String),
@@ -106,6 +108,10 @@ pub enum Ask {
     Preferences(String),
     /// Change one of them (needs the built-in `change_settings`); not answered.
     SetPreference(String, Preference),
+    /// One statement against the app's database (contract 6): rows, or why not.
+    Sql(String, String, Vec<Value>),
+    /// Statements as one transaction: what changed, or why not (nothing kept).
+    SqlBatch(String, Vec<(String, Vec<Value>)>),
 }
 
 impl Ask {
@@ -150,6 +156,16 @@ impl Ask {
     /// Asks for the person's choices: an [`Event::Data`] to read with [`Prefs::read`].
     pub fn preferences(msg: &str) -> Ask {
         Ask::Preferences(msg.into())
+    }
+    /// Runs one statement on the app's database: an [`Event::Rows`] or an
+    /// [`Event::Failed`]. Values go in `params` (`params![…]`), one per `?`.
+    pub fn sql(msg: &str, sql: &str, params: Vec<Value>) -> Ask {
+        Ask::Sql(msg.into(), sql.into(), params)
+    }
+    /// Runs statements as one transaction: an [`Event::Done`], or an
+    /// [`Event::Failed`] with nothing kept.
+    pub fn sql_batch(msg: &str, steps: Vec<(String, Vec<Value>)>) -> Ask {
+        Ask::SqlBatch(msg.into(), steps)
     }
     /// Asks Rapidkoi to change one of the person's choices (Rapidkoi's own Settings app only).
     pub fn set_preference(msg: &str, p: Preference) -> Ask {
