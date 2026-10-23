@@ -1,0 +1,15 @@
+[package]
+name = "rapidkoi-derive"
+version = "0.1.0"
+edition = "2021"
+description = "#[derive(State)] for Rapidkoi apps: a state of named fields and its link fields (contract 4)"
+license = "GPL-3.0-only"
+
+[lib]
+proc-macro = true
+
+# The same crates minicbor's derive already brings in: nothing new is fetched.
+[dependencies]
+proc-macro2 = "1"
+quote = "1"
+syn = { version = "2", features = ["full"] }

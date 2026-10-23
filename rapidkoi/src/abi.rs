@@ -1,6 +1,6 @@
-//! The calling convention of the contract (version 3): bytes in through `alloc`, bytes
-//! out as (pointer, length) packed in an i64, and the CBOR of the event
-//! events and the `{state, effects}` result of `handle`.
+//! The calling convention of the contract (version 4): bytes in through `alloc`, bytes
+//! out as (pointer, length) packed in an i64, and the CBOR of the events
+//! and the `{state, effects, link}` result of `handle`.
 //!
 //! Memory: every buffer handed to or returned from Rapidkoi lives in `LIVE`
 //! until the first `alloc` after an export has returned. By then Rapidkoi
@@ -13,10 +13,11 @@ use alloc::vec::Vec;
 use core::cell::RefCell;
 use minicbor::{Decoder, Encoder};
 
-use crate::{App, Ask};
+use crate::state::Link;
+use crate::{App, Ask, Next};
 
 #[doc(hidden)]
-pub const __CONTRACT_VERSION: i32 = 3;
+pub const __CONTRACT_VERSION: i32 = 4;
 
 struct Arena {
     live: Vec<Box<[u8]>>,
@@ -180,38 +181,31 @@ impl Event {
     }
 }
 
-fn save<A: App>(app: &A) -> Vec<u8> {
-    minicbor::to_vec(app).unwrap_or_default()
-}
-
 fn load<A: App>(state: &[u8]) -> A {
-    // Rapidkoi only ever hands back state this app made; if it can't be
-    // read, starting over is the safest answer.
-    minicbor::decode(state).unwrap_or_default()
+    // Rapidkoi hands back state this app made, with a link's fields set
+    // where they fit; if it can't be read, starting over is the safest answer.
+    A::decode_state(state).unwrap_or_default()
 }
 
 #[doc(hidden)]
 pub fn abi_handle<A: App>(state: &[u8], event: &[u8]) -> Vec<u8> {
     match Event::decode(event) {
         // A fresh start has no state yet: begin from Default.
-        Some(Event::Init) => {
-            let (next, asks) = A::default().handle(Event::Init);
-            result(&next, &asks)
-        }
-        Some(e) => {
-            let (next, asks) = load::<A>(state).handle(e);
-            result(&next, &asks)
-        }
+        Some(Event::Init) => result(&A::default().handle(Event::Init)),
+        Some(e) => result(&load::<A>(state).handle(e)),
         // A kind of event this app doesn't know: nothing changes.
-        None => result(&load::<A>(state), &[]),
+        None => result(&Next::state(load::<A>(state))),
     }
 }
 
-/// `{"state": <bytes>, "effects": [...]}`; writing to a Vec never fails.
-fn result<A: App>(app: &A, asks: &[Ask]) -> Vec<u8> {
+/// `{"state": {…}, "effects": [...], "link": [...] or null}`, `link` only
+/// when it changes; writing to a Vec never fails.
+fn result<A: App>(next: &Next<A>) -> Vec<u8> {
     let mut e = Encoder::new(Vec::new());
-    let _ = e.map(2);
-    let _ = e.str("state").and_then(|e| e.bytes(&save(app)));
+    let _ = e.map(if next.link == Link::Keep { 2 } else { 3 });
+    let _ = e.str("state");
+    next.state.encode_state(&mut e);
+    let asks = &next.asks;
     let _ = e.str("effects").and_then(|e| e.array(asks.len() as u64));
     for a in asks {
         match a {
@@ -234,6 +228,18 @@ fn result<A: App>(app: &A, asks: &[Ask]) -> Vec<u8> {
                 let _ = e.map(3).and_then(|e| e.str("kind")).and_then(|e| e.str("open_pin"));
                 let _ = e.str("msg").and_then(|e| e.str(msg));
                 let _ = e.str("index").and_then(|e| e.u32(*index));
+            }
+        }
+    }
+    match &next.link {
+        Link::Keep => {}
+        Link::Clear => {
+            let _ = e.str("link").and_then(|e| e.null());
+        }
+        Link::Set(names) => {
+            let _ = e.str("link").and_then(|e| e.array(names.len() as u64));
+            for n in names {
+                let _ = e.str(n);
             }
         }
     }
@@ -314,21 +320,20 @@ mod tests {
 
     #[test]
     fn the_new_tabs_asks_encode() {
-        #[derive(Default, minicbor::Encode, minicbor::Decode)]
+        #[derive(Default, crate::State)]
         struct S {
-            #[n(0)]
             n: i64,
         }
         impl App for S {
-            fn handle(self, _: Event) -> (Self, Vec<Ask>) { (self, Vec::new()) }
+            fn handle(self, _: Event) -> Next<Self> { Next::state(self) }
             fn view(&self) -> crate::View { crate::text("") }
         }
         let asks = [Ask::pins("p"), Ask::left_off("l"), Ask::open_pin("o", 2), Ask::continue_left_off("c")];
-        let bytes = result(&S { n: 1 }, &asks);
+        let bytes = result(&asks.iter().cloned().fold(Next::state(S { n: 1 }), Next::ask));
         let mut d = Decoder::new(&bytes);
         d.map().unwrap();
         d.str().unwrap();
-        d.bytes().unwrap();
+        d.skip().unwrap();
         d.str().unwrap();
         assert_eq!(d.array().unwrap(), Some(4));
         for (kind, msg) in [("pins", "p"), ("left_off", "l")] {
@@ -348,21 +353,21 @@ mod tests {
     #[test]
     fn asks_encode_as_effects() {
         // Decode what `result` wrote and read the effects back.
-        #[derive(Default, minicbor::Encode, minicbor::Decode)]
+        #[derive(Default, crate::State)]
         struct S {
-            #[n(0)]
             n: i64,
         }
         impl App for S {
-            fn handle(self, _: Event) -> (Self, Vec<Ask>) { (self, Vec::new()) }
+            fn handle(self, _: Event) -> Next<Self> { Next::state(self) }
             fn view(&self) -> crate::View { crate::text("") }
         }
         let post = crate::Request::post("https://api.acme.com/n", &[1]).header("x-a", "b");
-        let bytes = result(&S { n: 1 }, &[Ask::identity("me"), Ask::sign("go", &[7, 8]), Ask::fetch("f", post)]);
+        let bytes = result(&Next::state(S { n: 1 }).ask(Ask::identity("me")).ask(Ask::sign("go", &[7, 8])).ask(Ask::fetch("f", post)));
         let mut d = Decoder::new(&bytes);
         assert_eq!(d.map().unwrap(), Some(2));
         assert_eq!(d.str().unwrap(), "state");
-        d.bytes().unwrap();
+        assert_eq!(d.map().unwrap(), Some(1));
+        assert_eq!((d.str().unwrap(), d.i64().unwrap()), ("n", 1));
         assert_eq!(d.str().unwrap(), "effects");
         assert_eq!(d.array().unwrap(), Some(3));
         assert_eq!(d.map().unwrap(), Some(2));

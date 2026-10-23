@@ -3,17 +3,14 @@
 //! Build: `cargo build --release --target wasm32-unknown-unknown` in
 //! `guest/rust/`, then `./main guest/rust/target/wasm32-unknown-unknown/release/counter.wasm`.
 
-use minicbor::{Decode, Encode};
-use rapidkoi::{button, column, input, row, text, App, Ask, Event, Space, View, FIRST_NAME};
+use rapidkoi::{button, column, input, row, text, App, Ask, Event, Next, Space, State, View, FIRST_NAME};
 
-#[derive(Default, Encode, Decode)]
+#[derive(Default, State)]
 struct Counter {
-    #[n(0)]
+    /// In the window's address: a link to it opens a new window at this count.
     count: i64,
-    #[n(1)]
     name: String,
-    /// Its own key for you, from Rapidkoi (contract v2); none until it answers, or when not signed in.
-    #[n(2)]
+    /// Its own key for you, from Rapidkoi; none until it answers, or when not signed in.
     me: Option<Vec<u8>>,
 }
 
@@ -27,22 +24,21 @@ fn label(key: &[u8]) -> String {
 }
 
 impl App for Counter {
-    fn handle(self, event: Event) -> (Self, Vec<Ask>) {
+    fn handle(self, event: Event) -> Next<Self> {
         match event {
-            // Every open, fresh or resumed: ask Rapidkoi who you are to this app.
-            Event::Opened => (self, vec![Ask::identity("me")]),
-            Event::Answer { msg, value } if msg == "me" => (Counter { me: value, ..self }, vec![]),
-            Event::Message { msg, value } => (
-                match msg.as_str() {
-                    "add" => Counter { count: self.count + 1, ..self },
-                    "reset" => Counter { count: 0, ..self },
-                    "name" => Counter { name: value.unwrap_or_default(), ..self },
-                    _ => self,
-                },
-                vec![],
-            ),
-            // Init (Default is the start), and events this version doesn't use.
-            _ => (self, vec![]),
+            // A fresh start (Default is the start): the count goes in the address.
+            Event::Init => Next::state(self).link(Counter::count),
+            // Every open, fresh, resumed or from a link: ask Rapidkoi who you are to this app.
+            Event::Opened => Next::state(self).ask(Ask::identity("me")),
+            Event::Answer { msg, value } if msg == "me" => Next::state(Counter { me: value, ..self }),
+            Event::Message { msg, value } => match msg.as_str() {
+                "add" => Next::state(Counter { count: self.count + 1, ..self }).link(Counter::count),
+                "reset" => Next::state(Counter { count: 0, ..self }).link(Counter::count),
+                "name" => Next::state(Counter { name: value.unwrap_or_default(), ..self }),
+                _ => Next::state(self),
+            },
+            // Events this version doesn't use.
+            _ => Next::state(self),
         }
     }
 
@@ -81,16 +77,24 @@ rapidkoi::export!(Counter);
 mod tests {
     use super::*;
 
-    fn message(c: Counter, msg: &str, value: Option<&str>) -> Counter {
-        c.handle(Event::Message { msg: msg.into(), value: value.map(String::from) }).0
+    fn message(c: Counter, msg: &str, value: Option<&str>) -> Next<Counter> {
+        c.handle(Event::Message { msg: msg.into(), value: value.map(String::from) })
     }
 
     #[test]
     fn add_reset_and_name() {
-        let c = message(message(Counter::default(), "add", None), "add", None);
+        let c = message(message(Counter::default(), "add", None).into_state(), "add", None).into_state();
         assert_eq!(c.count, 2);
-        let c = message(message(c, "name", Some("Amina")), "reset", None);
+        let c = message(message(c, "name", Some("Amina")).into_state(), "reset", None).into_state();
         assert_eq!((c.count, c.name.as_str()), (0, "Amina"));
+    }
+
+    #[test]
+    fn the_address_follows_the_count() {
+        // PRP-036: the count goes in the address from the start, and stays there.
+        assert_eq!(Counter::default().handle(Event::Init).linked(), Some(vec!["count"]));
+        assert_eq!(message(Counter::default(), "add", None).linked(), Some(vec!["count"]));
+        assert_eq!(message(Counter::default(), "name", Some("Amina")).linked(), None);
     }
 
     #[test]
@@ -108,11 +112,11 @@ mod tests {
 
     #[test]
     fn it_asks_who_you_are_on_every_open() {
-        let (c, asks) = Counter::default().handle(Event::Opened);
-        assert_eq!(asks, vec![Ask::identity("me")]);
-        let (c, _) = c.handle(Event::Answer { msg: "me".into(), value: Some(vec![0x4f, 0x9a, 1, 2]) });
+        let opened = Counter::default().handle(Event::Opened);
+        assert_eq!(opened.asks(), &[Ask::identity("me")]);
+        let c = opened.into_state().handle(Event::Answer { msg: "me".into(), value: Some(vec![0x4f, 0x9a, 1, 2]) }).into_state();
         assert_eq!(label(c.me.as_deref().unwrap()), "User 4f9a");
         // Resumed later: it asks again.
-        assert_eq!(c.handle(Event::Opened).1, vec![Ask::identity("me")]);
+        assert_eq!(c.handle(Event::Opened).asks(), &[Ask::identity("me")]);
     }
 }

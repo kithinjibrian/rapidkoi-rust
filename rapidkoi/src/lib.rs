@@ -3,19 +3,25 @@
 //! An app is two functions over its state: [`App::handle`], which answers
 //! everything that happens (an [`Event`]: a fresh start, being opened, its
 //! own messages, Rapidkoi's answers), and [`App::view`], what's on screen.
-//! Rapidkoi holds the state between calls, as CBOR bytes, so the state type
-//! derives minicbor's `Encode` and `Decode`, and `Default` (the start of a
-//! fresh run). [`export!`] writes the WebAssembly exports the shell calls.
+//! Rapidkoi holds the state between calls as named fields (contract 4), so
+//! the state type derives [`State`] and `Default` (the start of a fresh
+//! run). [`export!`] writes the WebAssembly exports the shell calls.
+//!
+//! `handle` returns a [`Next`]: the new state, what to ask Rapidkoi for,
+//! and which fields go in the window's address. A link to the window
+//! carries them, and opening it starts a new window with them set.
 //!
 //! ```ignore
-//! #[derive(Default, minicbor::Encode, minicbor::Decode)]
-//! struct Counter { #[n(0)] count: i64 }
+//! #[derive(Default, rapidkoi::State)]
+//! struct Counter { count: i64 }
 //!
 //! impl rapidkoi::App for Counter {
-//!     fn handle(self, event: rapidkoi::Event) -> (Self, Vec<rapidkoi::Ask>) {
+//!     fn handle(self, event: rapidkoi::Event) -> rapidkoi::Next<Self> {
 //!         match event {
-//!             rapidkoi::Event::Message { msg, .. } if msg == "add" => (Counter { count: self.count + 1 }, vec![]),
-//!             _ => (self, vec![]),
+//!             rapidkoi::Event::Message { msg, .. } if msg == "add" => {
+//!                 rapidkoi::Next::state(Counter { count: self.count + 1 }).link(Counter::count)
+//!             }
+//!             _ => rapidkoi::Next::state(self),
 //!         }
 //!     }
 //!     fn view(&self) -> rapidkoi::View {
@@ -28,7 +34,7 @@
 //!
 //! An app can ask Rapidkoi for its own key for the person
 //! ([`Ask::identity`]) or a sign-in signature ([`Ask::sign`]) from any
-//! event, usually [`Event::Opened`]; the reply is an [`Event::Answer`]. Text
+//! event, usually [`Event::Opened`], with [`Next::ask`]; the reply is an [`Event::Answer`]. Text
 //! can hold [`FIRST_NAME`] and [`LAST_NAME`]: Rapidkoi fills in the
 //! person's name while drawing, so the app shows it without ever knowing it.
 //!
@@ -38,17 +44,26 @@
 
 #![cfg_attr(not(test), no_std)]
 extern crate alloc;
+// `#[derive(State)]` names this crate `::rapidkoi`, inside it too.
+extern crate self as rapidkoi;
 
 mod abi;
 mod fetch;
 mod home;
 mod signin;
+mod state;
 mod view;
 
 pub use abi::{Event, __alloc, __finish, __input, __CONTRACT_VERSION};
 pub use fetch::{header, Request};
 pub use home::{Place, Session};
 pub use signin::{Progress, SignIn};
+pub use rapidkoi_derive::State;
+pub use state::{Field, Next, Simple, State};
+#[doc(hidden)]
+pub use minicbor as __minicbor;
+#[doc(hidden)]
+pub use alloc::vec::Vec as __Vec;
 pub use view::{button, column, input, row, text, Space, View};
 use alloc::string::String;
 use alloc::vec::Vec;
@@ -123,9 +138,10 @@ impl Ask {
 }
 
 /// A Rapidkoi app: its state, how events change it, and what it shows.
-pub trait App: Sized + Default + minicbor::Encode<()> + for<'b> minicbor::Decode<'b, ()> {
-    /// The next state after `event`, and what to ask Rapidkoi for.
-    fn handle(self, event: Event) -> (Self, Vec<Ask>);
+pub trait App: State {
+    /// The next state after `event`, what to ask Rapidkoi for, and which
+    /// fields go in the window's address.
+    fn handle(self, event: Event) -> Next<Self>;
     /// What's on screen in this state.
     fn view(&self) -> View;
 }

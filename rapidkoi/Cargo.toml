@@ -2,8 +2,9 @@
 name = "rapidkoi"
 version = "0.1.0"
 edition = "2021"
-description = "Write Rapidkoi apps in Rust: UI contract v2"
+description = "Write Rapidkoi apps in Rust: contract 4"
 license = "GPL-3.0-only"
 
 [dependencies]
 minicbor = { version = "2", features = ["alloc", "derive"] }
+rapidkoi-derive = { path = "../rapidkoi-derive" }
