@@ -224,6 +224,24 @@ fn result<A: App>(next: &Next<A>) -> Vec<u8> {
             Ask::ContinueLeftOff(msg) => plain(&mut e, "continue", msg),
             Ask::Session(msg) => plain(&mut e, "session", msg),
             Ask::RestoreSession(msg) => plain(&mut e, "restore_session", msg),
+            Ask::Preferences(msg) => plain(&mut e, "preferences", msg),
+            Ask::SetPreference(msg, p) => {
+                let _ = e.map(4).and_then(|e| e.str("kind")).and_then(|e| e.str("set_preference"));
+                let _ = e.str("msg").and_then(|e| e.str(msg));
+                let _ = match p {
+                    crate::Preference::Light(on) => e
+                        .str("name")
+                        .and_then(|e| e.str("theme"))
+                        .and_then(|e| e.str("value"))
+                        .and_then(|e| e.str(if *on { "light" } else { "dark" })),
+                    crate::Preference::MoreContrast(on) => {
+                        e.str("name").and_then(|e| e.str("more_contrast")).and_then(|e| e.str("value")).and_then(|e| e.bool(*on))
+                    }
+                    crate::Preference::TextSize(n) => {
+                        e.str("name").and_then(|e| e.str("text_size")).and_then(|e| e.str("value")).and_then(|e| e.u16(*n))
+                    }
+                };
+            }
             Ask::OpenPin(msg, index) => {
                 let _ = e.map(3).and_then(|e| e.str("kind")).and_then(|e| e.str("open_pin"));
                 let _ = e.str("msg").and_then(|e| e.str(msg));

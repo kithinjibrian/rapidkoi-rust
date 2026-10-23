@@ -82,6 +82,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "settings"
+version = "0.1.0"
+dependencies = [
+ "minicbor",
+ "rapidkoi",
+]
+
+[[package]]
 name = "styled"
 version = "0.1.0"
 dependencies = [

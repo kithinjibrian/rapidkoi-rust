@@ -50,6 +50,7 @@ extern crate self as rapidkoi;
 mod abi;
 mod fetch;
 mod home;
+mod prefs;
 mod signin;
 pub mod raw;
 mod state;
@@ -59,6 +60,7 @@ mod view;
 pub use abi::{Event, __alloc, __finish, __input, __CONTRACT_VERSION};
 pub use fetch::{header, Request};
 pub use home::{Place, Session};
+pub use prefs::{Preference, Prefs};
 pub use signin::{Progress, SignIn};
 pub use rapidkoi_derive::State;
 pub use state::{Field, Next, Simple, State};
@@ -98,6 +100,10 @@ pub enum Ask {
     Session(String),
     /// Restore the person's last session (needs the built-in `restore_session`); not answered.
     RestoreSession(String),
+    /// The person's choices: light or dark, more contrast, text size (any app).
+    Preferences(String),
+    /// Change one of them (needs the built-in `change_settings`); not answered.
+    SetPreference(String, Preference),
 }
 
 impl Ask {
@@ -138,6 +144,14 @@ impl Ask {
     /// Asks Rapidkoi to restore the last session.
     pub fn restore_session(msg: &str) -> Ask {
         Ask::RestoreSession(msg.into())
+    }
+    /// Asks for the person's choices: an [`Event::Data`] to read with [`Prefs::read`].
+    pub fn preferences(msg: &str) -> Ask {
+        Ask::Preferences(msg.into())
+    }
+    /// Asks Rapidkoi to change one of the person's choices (Rapidkoi's own Settings app only).
+    pub fn set_preference(msg: &str, p: Preference) -> Ask {
+        Ask::SetPreference(msg.into(), p)
     }
 }
 
