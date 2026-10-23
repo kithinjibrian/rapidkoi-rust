@@ -3,6 +3,7 @@
 //! [`Field`] per field; [`Next`] is what [`crate::App::handle`] returns: the
 //! new state, what to ask Rapidkoi for, and which fields the address shows.
 
+use alloc::string::String;
 use alloc::vec::Vec;
 use core::marker::PhantomData;
 use minicbor::Encoder;
@@ -18,21 +19,61 @@ pub trait State: Sized + Default {
     fn decode_state(bytes: &[u8]) -> Option<Self>;
 }
 
-/// A field of state `S` holding a `T`, named for the address: `Counter::count`.
+/// The most steps a link path may take (PRP-039): `a.b.c.d`.
+pub const MAX_PATH: usize = 4;
+
+/// A field of state `S` holding a `T`, named for the address: `Counter::count`,
+/// or a path into nested state: `App::editor.then(Editor::task)`.
 pub struct Field<S, T> {
-    name: &'static str,
+    steps: [&'static str; MAX_PATH],
+    len: usize,
     of: PhantomData<fn(S) -> T>,
 }
 
 impl<S, T> Field<S, T> {
     #[doc(hidden)]
     pub const fn new(name: &'static str) -> Self {
-        Field { name, of: PhantomData }
+        Field { steps: [name, "", "", ""], len: 1, of: PhantomData }
     }
 
-    /// The field's name, as the address writes it.
-    pub fn name(&self) -> &'static str {
-        self.name
+    /// A path one step further in: `App::editor.then(Editor::task)` is
+    /// `editor.task`. Panics past four steps, Rapidkoi's limit.
+    ///
+    /// ```
+    /// use rapidkoi::{Next, State};
+    ///
+    /// #[derive(Default, State)]
+    /// struct Editor { task: u32, notes: Vec<String> }
+    /// #[derive(Default, State)]
+    /// struct App { editor: Editor }
+    ///
+    /// let next = Next::state(App::default()).link(App::editor.then(Editor::task));
+    /// ```
+    ///
+    /// A path ending on a list can't go in an address:
+    ///
+    /// ```compile_fail
+    /// use rapidkoi::{Next, State};
+    ///
+    /// #[derive(Default, State)]
+    /// struct Editor { task: u32, notes: Vec<String> }
+    /// #[derive(Default, State)]
+    /// struct App { editor: Editor }
+    ///
+    /// let next = Next::state(App::default()).link(App::editor.then(Editor::notes));
+    /// ```
+    pub fn then<U>(self, next: Field<T, U>) -> Field<S, U> {
+        assert!(self.len + next.len <= MAX_PATH, "a link path is at most four steps");
+        let mut steps = self.steps;
+        for i in 0..next.len {
+            steps[self.len + i] = next.steps[i];
+        }
+        Field { steps, len: self.len + next.len, of: PhantomData }
+    }
+
+    /// The field's name, as the address writes it: its steps joined by `.`.
+    pub fn name(&self) -> String {
+        self.steps[..self.len].join(".")
     }
 }
 
@@ -64,7 +105,7 @@ pub(crate) enum Link {
     /// No fields.
     Clear,
     /// These fields, in order.
-    Set(Vec<&'static str>),
+    Set(Vec<String>),
 }
 
 /// What [`crate::App::handle`] returns: the new state, what it asks for,
@@ -108,8 +149,9 @@ impl<S> Next<S> {
             Link::Set(names) => names,
             _ => Vec::new(),
         };
-        if !names.contains(&field.name) {
-            names.push(field.name);
+        let name = field.name();
+        if !names.contains(&name) {
+            names.push(name);
         }
         self.link = Link::Set(names);
         self
@@ -143,7 +185,7 @@ impl<S> Next<S> {
     }
 
     /// The fields the address names, when this changes them: `Some([])` for none.
-    pub fn linked(&self) -> Option<Vec<&'static str>> {
+    pub fn linked(&self) -> Option<Vec<String>> {
         match &self.link {
             Link::Keep => None,
             Link::Clear => Some(Vec::new()),
@@ -203,10 +245,43 @@ mod tests {
     #[test]
     fn next_names_the_address_fields() {
         let n = Next::state(Notes::default()).link(Notes::count).link(Notes::due).link(Notes::count);
-        assert_eq!(n.linked(), Some(vec!["count", "due"]));
+        assert_eq!(n.linked(), Some(vec![String::from("count"), String::from("due")]));
         assert_eq!(Next::state(Notes::default()).linked(), None);
-        assert_eq!(Next::state(Notes::default()).link(Notes::filter).no_link().linked(), Some(vec![]));
+        assert_eq!(Next::state(Notes::default()).link(Notes::filter).no_link().linked(), Some(Vec::<String>::new()));
         let asked = Next::state(Notes::default()).ask(Ask::identity("me"));
         assert_eq!(asked.asks(), &[Ask::identity("me")]);
+    }
+
+    #[derive(Debug, Default, PartialEq, crate::State)]
+    struct Editor {
+        task: u32,
+        notes: Vec<String>,
+    }
+
+    #[derive(Debug, Default, PartialEq, crate::State)]
+    struct Whole {
+        page: String,
+        editor: Editor,
+    }
+
+    #[test]
+    fn nested_state_is_named_fields_too() {
+        // PRP-039: so a path like editor.task finds its way.
+        let w = Whole { page: "task".into(), editor: Editor { task: 42, notes: vec![] } };
+        let mut e = Encoder::new(Vec::new());
+        w.encode_state(&mut e);
+        let bytes = e.into_writer();
+        let mut d = minicbor::Decoder::new(&bytes);
+        assert_eq!(d.map().unwrap(), Some(2));
+        assert_eq!((d.str().unwrap(), d.str().unwrap()), ("page", "task"));
+        assert_eq!((d.str().unwrap(), d.map().unwrap()), ("editor", Some(2)));
+        assert_eq!((d.str().unwrap(), d.u32().unwrap()), ("task", 42));
+        assert_eq!(Whole::decode_state(&bytes), Some(w));
+    }
+
+    #[test]
+    fn then_names_a_path() {
+        let n = Next::state(Whole::default()).link(Whole::page).link(Whole::editor.then(Editor::task));
+        assert_eq!(n.linked(), Some(vec![String::from("page"), String::from("editor.task")]));
     }
 }

@@ -4,51 +4,61 @@
 //! keyboard and screen-reader facts come with it.
 //!
 //! ```
-//! use rapidkoi::{button, column, text, Space};
+//! use rapidkoi::{button, column, text, Message, Space, View};
 //!
-//! let screen = column([
+//! #[derive(Message)]
+//! enum Msg { Add }
+//!
+//! let screen: View<Msg> = column([
 //!     text("Counter").title(),
-//!     button("Add").primary().on_press("add"),
+//!     button("Add").primary().on_press(Msg::Add),
 //! ])
 //! .spacing(Space::Md);
 //! ```
 
-use alloc::format;
 
+use crate::message::Message;
 use crate::raw::{boxed, field, Role, View};
 use crate::style::{
     Align, Background, Border, Color, Corner, Effects, Font, Layout, Outline, Sizing, Space, Spacing, State, Text,
     TextSize, Weight, When,
 };
 
-impl View {
+impl<M: Message> View<M> {
+    /// A checkbox or switch: the message a click (or Space) sends.
+    pub fn on_toggle(self, msg: M) -> View<M> {
+        self.on_press(msg)
+    }
+}
+
+impl<M> View<M> {
     /// A text: a view's title.
-    pub fn title(self) -> View {
+    pub fn title(self) -> View<M> {
         self.style([Font::size(TextSize::Title), Font::weight(Weight::Bold)])
     }
 
     /// A text: a section heading.
-    pub fn heading(self) -> View {
+    pub fn heading(self) -> View<M> {
         self.style([Font::size(TextSize::Heading), Font::weight(Weight::Bold)])
     }
 
     /// A text: secondary.
-    pub fn dim(self) -> View {
+    pub fn dim(self) -> View<M> {
         self.style([Text::color(Color::system("text_dim"))])
     }
 
     /// A button: the one main action in a view.
-    pub fn primary(self) -> View {
+    pub fn primary(self) -> View<M> {
         self.painted("accent", "on_accent")
     }
 
     /// A button: deletes or discards.
-    pub fn danger(self) -> View {
+    pub fn danger(self) -> View<M> {
         self.painted("danger", "on_danger")
     }
 
     /// A button: low emphasis, no fill until hovered.
-    pub fn subtle(self) -> View {
+    pub fn subtle(self) -> View<M> {
         self.style([
             Background::color(Color::rgba(0, 0, 0, 0)),
             When(State::Hover, [Background::color(Color::system("surface"))]),
@@ -57,22 +67,17 @@ impl View {
     }
 
     /// A box: room between its children.
-    pub fn spacing(self, s: Space) -> View {
+    pub fn spacing(self, s: Space) -> View<M> {
         self.style([Spacing::gap(s)])
     }
 
     /// A box: room inside its edge.
-    pub fn padding(self, s: Space) -> View {
+    pub fn padding(self, s: Space) -> View<M> {
         self.style([Spacing::padding(s)])
     }
 
-    /// A checkbox or switch: the message a click (or Space) sends.
-    pub fn on_toggle(self, msg: &str) -> View {
-        self.on_press(msg)
-    }
-
     /// A button's fill, its text, and hover and press a step towards the text.
-    fn painted(self, fill: &str, ink: &str) -> View {
+    fn painted(self, fill: &str, ink: &str) -> View<M> {
         self.style([
             Background::color(Color::system(fill)),
             When(State::Hover, [Background::color(Color::system(fill).mix(Color::system("text"), 0.1))]),
@@ -82,29 +87,29 @@ impl View {
     }
 
     /// The colour of the text inside a button: its first child's.
-    fn ink(self, colour: &str) -> View {
+    fn ink(self, colour: &str) -> View<M> {
         self.restyle_first(Text::color(Color::system(colour)))
     }
 }
 
 /// A line of text.
-pub fn text(s: &str) -> View {
+pub fn text<M>(s: &str) -> View<M> {
     crate::raw::text(s)
 }
 
 /// Children top to bottom, each at its own width unless it stretches.
-pub fn column(children: impl IntoIterator<Item = View>) -> View {
+pub fn column<M>(children: impl IntoIterator<Item = View<M>>) -> View<M> {
     boxed().children(children)
 }
 
 /// Children left to right.
-pub fn row(children: impl IntoIterator<Item = View>) -> View {
+pub fn row<M>(children: impl IntoIterator<Item = View<M>>) -> View<M> {
     boxed().style([Layout::row()]).children(children)
 }
 
 /// A button labelled `label`; give it [`View::on_press`] to make it work,
 /// or it's shown disabled.
-pub fn button(label: &str) -> View {
+pub fn button<M>(label: &str) -> View<M> {
     let mut b = boxed()
         .role(Role::Button)
         .style([
@@ -123,18 +128,18 @@ pub fn button(label: &str) -> View {
 
 /// A one-line typing box showing `value`; give it [`View::on_change`],
 /// and [`View::on_submit`] for Enter.
-pub fn input(value: &str) -> View {
+pub fn input<M>(value: &str) -> View<M> {
     field(value)
 }
 
 /// A typing box of several lines showing `value`.
-pub fn text_area(value: &str) -> View {
+pub fn text_area<M>(value: &str) -> View<M> {
     field(value).lines(5)
 }
 
 /// A checkbox labelled `label`: a box that ticks, and its words; clicking
 /// either, or Space, sends [`View::on_toggle`]'s message.
-pub fn checkbox(label: &str, checked: bool) -> View {
+pub fn checkbox<M>(label: &str, checked: bool) -> View<M> {
     let mark = boxed()
         .style([
             Sizing::width(18),
@@ -159,8 +164,8 @@ pub fn checkbox(label: &str, checked: bool) -> View {
 }
 
 /// Tabs: one per `(key, label)`, `selected` marked. Picking one sends
-/// `"{msg}:{key}"`.
-pub fn tabs(items: &[(&str, &str)], selected: &str, msg: &str) -> View {
+/// `pick(key)`.
+pub fn tabs<M: Message>(items: &[(&str, &str)], selected: &str, pick: impl Fn(&str) -> M) -> View<M> {
     boxed()
         .role(Role::TabList)
         .style([Layout::row(), Spacing::gap(Space::Xs), Layout::align(Align::Start)])
@@ -169,7 +174,7 @@ pub fn tabs(items: &[(&str, &str)], selected: &str, msg: &str) -> View {
             let tab = boxed()
                 .role(Role::Tab)
                 .selected(on)
-                .on_press(&format!("{msg}:{key}"))
+                .on_press(pick(key))
                 .style([
                     Spacing::padding_xy(Space::Xs, Space::Md),
                     Border::corner(Corner::Medium),
@@ -181,17 +186,18 @@ pub fn tabs(items: &[(&str, &str)], selected: &str, msg: &str) -> View {
 }
 
 /// Room that grows: pushes what follows it in a row to the end.
-pub fn spacer() -> View {
+pub fn spacer<M>() -> View<M> {
     boxed().style([Layout::grow()])
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use alloc::string::String;
     use minicbor::Decoder;
 
     /// The props map's keys, in order.
-    fn keys(v: &View) -> alloc::vec::Vec<String> {
+    fn keys<M>(v: &View<M>) -> alloc::vec::Vec<String> {
         let bytes = v.encode();
         let mut d = Decoder::new(&bytes);
         d.map().unwrap();
@@ -207,35 +213,40 @@ mod tests {
         out
     }
 
+    fn s(x: &str) -> String {
+        String::from(x)
+    }
+
     #[test]
     fn a_button_is_a_pressable_box_with_a_role() {
-        let k = keys(&button("Add").primary().on_press("add"));
+        let k = keys(&button("Add").primary().on_press(s("add")));
         assert_eq!(k, ["role", "on_press", "style"]);
     }
 
     #[test]
     fn a_button_with_nothing_to_send_is_disabled() {
-        let k = keys(&button("Reset"));
+        let k = keys(&button::<String>("Reset"));
         assert_eq!(k, ["role", "on_press", "disabled", "style"]);
-        assert_eq!(button("Reset").on_press_if(false, "reset"), button("Reset"));
+        assert_eq!(button("Reset").on_press_if(false, s("reset")), button("Reset"));
     }
 
     #[test]
     fn a_checkbox_says_what_it_is() {
-        let k = keys(&checkbox("Buy milk", true).on_toggle("toggle:3"));
+        let k = keys(&checkbox("Buy milk", true).on_toggle(s("toggle:3")));
         assert_eq!(k, ["role", "checked", "label", "on_press", "style"]);
     }
 
     #[test]
     fn restyling_a_widget_keeps_the_rest_of_its_look() {
-        let mine = button("Go").style([Background::color(Color::rgb(0x2e, 0x7d, 0x32))]);
+        let mine = button::<String>("Go").style([Background::color(Color::rgb(0x2e, 0x7d, 0x32))]);
         assert_ne!(mine, button("Go"));
-        assert_eq!(keys(&mine), keys(&button("Go")));
+        assert_eq!(keys(&mine), keys(&button::<String>("Go")));
     }
 
     #[test]
-    fn tabs_send_their_key() {
-        let t = tabs(&[("all", "All"), ("open", "Open")], "open", "filter");
-        assert!(alloc::format!("{:?}", t).contains("filter:open"));
+    fn tabs_send_what_pick_makes() {
+        let t = tabs(&[("all", "All"), ("open", "Open")], "open", |k| alloc::format!("filter:{k}"));
+        let b = t.encode();
+        assert!(b.windows(11).any(|w| w == b"filter:open"));
     }
 }

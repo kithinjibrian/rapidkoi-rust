@@ -14,7 +14,7 @@ use core::cell::RefCell;
 use minicbor::{Decoder, Encoder};
 
 use crate::state::Link;
-use crate::{App, Ask, Next};
+use crate::{App, Ask, Message, Next};
 
 #[doc(hidden)]
 pub const __CONTRACT_VERSION: i32 = 5;
@@ -68,7 +68,7 @@ pub fn __finish(out: Vec<u8>) -> i64 {
 /// (closing, going to the background), so match with a `_` arm.
 #[derive(Debug, PartialEq, Eq)]
 #[non_exhaustive]
-pub enum Event {
+pub enum Event<M = String> {
     /// A fresh start: make the first state from `Default`.
     Init,
     /// Every time the app is opened, fresh or from saved state: ask here for what you need.
@@ -79,8 +79,8 @@ pub enum Event {
     /// Something it may read changed while it's in front (your pins, where
     /// you left off, one of its permission settings): ask again.
     Change,
-    /// One of your own messages (a click, typing); `value` is an input's text.
-    Message { msg: String, value: Option<String> },
+    /// One of your own messages (a click, typing, PRP-039: typed); `value` is an input's text.
+    Message { msg: M, value: Option<String> },
     /// Rapidkoi's reply to an identity or sign [`crate::Ask`] sent with
     /// `msg`: the bytes, or `None` (not signed in, or an unsigned app, or
     /// nothing left off).
@@ -125,19 +125,30 @@ fn reply(d: &mut Decoder) -> Option<Reply> {
     }
 }
 
-impl Event {
+impl<M: Message> Event<M> {
     /// Decodes an event `{ "event": …, … }` (contract 3's `on_` names);
     /// anything unexpected (or a kind this version doesn't know) is `None`.
-    pub fn decode(bytes: &[u8]) -> Option<Event> {
+    pub fn decode(bytes: &[u8]) -> Option<Event<M>> {
         let mut d = Decoder::new(bytes);
         let n = d.map().ok()??;
         let mut kind = None;
         let mut msg = None;
+        // A message is the app's own type: kept as its bytes until the kind is known.
+        let mut raw_msg: Option<(usize, usize)> = None;
         let mut value: Option<(minicbor::data::Type, usize, usize)> = None;
         for _ in 0..n {
             match d.str().ok()? {
                 "event" => kind = Some(String::from(d.str().ok()?)),
-                "msg" => msg = Some(String::from(d.str().ok()?)),
+                "msg" => {
+                    let start = d.position();
+                    // An ask's msg is text; a message may be any value of the app's own.
+                    if d.datatype().ok()? == minicbor::data::Type::String {
+                        msg = Some(String::from(d.str().ok()?));
+                    } else {
+                        d.skip().ok()?;
+                    }
+                    raw_msg = Some((start, d.position()));
+                }
                 "value" => {
                     // Kept as its span: what it means depends on the event.
                     let t = d.datatype().ok()?;
@@ -160,7 +171,8 @@ impl Event {
                     None => None,
                     Some(_) => return None,
                 };
-                Some(Event::Message { msg: msg?, value: text })
+                let (a, b) = raw_msg?;
+                Some(Event::Message { msg: crate::message::from_bytes(&bytes[a..b])?, value: text })
             }
             "on_answer" => match value {
                 Some((minicbor::data::Type::Bytes, a, b)) => {
@@ -189,7 +201,7 @@ fn load<A: App>(state: &[u8]) -> A {
 
 #[doc(hidden)]
 pub fn abi_handle<A: App>(state: &[u8], event: &[u8]) -> Vec<u8> {
-    match Event::decode(event) {
+    match Event::<A::Msg>::decode(event) {
         // A fresh start has no state yet: begin from Default.
         Some(Event::Init) => result(&A::default().handle(Event::Init)),
         Some(e) => result(&load::<A>(state).handle(e)),
@@ -291,37 +303,37 @@ mod tests {
             e.into_writer()
         };
         let init = enc(&[("event", &|e| { e.str("on_init").unwrap(); })]);
-        assert_eq!(Event::decode(&init), Some(Event::Init));
+        assert_eq!(Event::<String>::decode(&init), Some(Event::Init));
         let msg = enc(&[("event", &|e| { e.str("on_message").unwrap(); }), ("msg", &|e| { e.str("name").unwrap(); }), ("value", &|e| { e.str("Amina").unwrap(); })]);
-        assert_eq!(Event::decode(&msg), Some(Event::Message { msg: "name".into(), value: Some("Amina".into()) }));
+        assert_eq!(Event::<String>::decode(&msg), Some(Event::Message { msg: "name".into(), value: Some("Amina".into()) }));
         let ans = enc(&[("event", &|e| { e.str("on_answer").unwrap(); }), ("msg", &|e| { e.str("me").unwrap(); }), ("value", &|e| { e.bytes(&[1, 2]).unwrap(); })]);
-        assert_eq!(Event::decode(&ans), Some(Event::Answer { msg: "me".into(), value: Some(alloc::vec![1, 2]) }));
+        assert_eq!(Event::<String>::decode(&ans), Some(Event::Answer { msg: "me".into(), value: Some(alloc::vec![1, 2]) }));
         let none = enc(&[("event", &|e| { e.str("on_answer").unwrap(); }), ("msg", &|e| { e.str("me").unwrap(); }), ("value", &|e| { e.null().unwrap(); })]);
-        assert_eq!(Event::decode(&none), Some(Event::Answer { msg: "me".into(), value: None }));
+        assert_eq!(Event::<String>::decode(&none), Some(Event::Answer { msg: "me".into(), value: None }));
         let got = enc(&[("event", &|e| { e.str("on_response").unwrap(); }), ("msg", &|e| { e.str("q").unwrap(); }), ("value", &|e| {
             e.map(3).unwrap().str("status").unwrap().u16(301).unwrap();
             e.str("headers").unwrap().map(1).unwrap().str("location").unwrap().str("/x").unwrap();
             e.str("body").unwrap().bytes(b"hi").unwrap();
         })]);
-        assert_eq!(Event::decode(&got), Some(Event::Response { msg: "q".into(), status: 301, headers: alloc::vec![("location".into(), "/x".into())], body: b"hi".to_vec() }));
+        assert_eq!(Event::<String>::decode(&got), Some(Event::Response { msg: "q".into(), status: 301, headers: alloc::vec![("location".into(), "/x".into())], body: b"hi".to_vec() }));
         let failed = enc(&[("event", &|e| { e.str("on_fail").unwrap(); }), ("msg", &|e| { e.str("q").unwrap(); }), ("value", &|e| {
             e.map(1).unwrap().str("error").unwrap().str("You turned off x for Notes").unwrap();
         })]);
-        assert_eq!(Event::decode(&failed), Some(Event::Failed { msg: "q".into(), error: "You turned off x for Notes".into() }));
+        assert_eq!(Event::<String>::decode(&failed), Some(Event::Failed { msg: "q".into(), error: "You turned off x for Notes".into() }));
         let resume = enc(&[("event", &|e| { e.str("on_resume").unwrap(); })]);
-        assert_eq!(Event::decode(&resume), Some(Event::Resume));
+        assert_eq!(Event::<String>::decode(&resume), Some(Event::Resume));
         let change = enc(&[("event", &|e| { e.str("on_change").unwrap(); })]);
-        assert_eq!(Event::decode(&change), Some(Event::Change));
+        assert_eq!(Event::<String>::decode(&change), Some(Event::Change));
         let open = enc(&[("event", &|e| { e.str("on_open").unwrap(); })]);
-        assert_eq!(Event::decode(&open), Some(Event::Opened));
+        assert_eq!(Event::<String>::decode(&open), Some(Event::Opened));
         let data = enc(&[("event", &|e| { e.str("on_answer").unwrap(); }), ("msg", &|e| { e.str("pins").unwrap(); }), ("value", &|e| { e.array(0).unwrap(); })]);
-        assert_eq!(Event::decode(&data), Some(Event::Data { msg: "pins".into(), cbor: alloc::vec![0x80] }));
+        assert_eq!(Event::<String>::decode(&data), Some(Event::Data { msg: "pins".into(), cbor: alloc::vec![0x80] }));
         // Contract 2's names are another contract's: unknown here.
         let old = enc(&[("event", &|e| { e.str("init").unwrap(); })]);
-        assert_eq!(Event::decode(&old), None);
+        assert_eq!(Event::<String>::decode(&old), None);
         let later = enc(&[("event", &|e| { e.str("on_pause").unwrap(); })]);
-        assert_eq!(Event::decode(&later), None);
-        assert_eq!(Event::decode(&[0x80]), None);
+        assert_eq!(Event::<String>::decode(&later), None);
+        assert_eq!(Event::<String>::decode(&[0x80]), None);
     }
 
     #[test]
@@ -343,6 +355,7 @@ mod tests {
             n: i64,
         }
         impl App for S {
+            type Msg = String;
             fn handle(self, _: Event) -> Next<Self> { Next::state(self) }
             fn view(&self) -> crate::View { crate::text("") }
         }
@@ -376,6 +389,7 @@ mod tests {
             n: i64,
         }
         impl App for S {
+            type Msg = String;
             fn handle(self, _: Event) -> Next<Self> { Next::state(self) }
             fn view(&self) -> crate::View { crate::text("") }
         }

@@ -7,7 +7,13 @@
 
 use rapidkoi::raw::{boxed, Role};
 use rapidkoi::style::{Background, Border, Color, Corner, Font, Shadow, Space, Spacing, State, Text, TextSize, Weight, When};
-use rapidkoi::{button, column, row, text, App, Event, Next, State as AppState, View};
+use rapidkoi::{button, column, row, text, App, Event, Message, Next, State as AppState, View};
+
+/// What its screen sends: any press counts.
+#[derive(Debug, Clone, PartialEq, Message)]
+enum Msg {
+    Press,
+}
 
 #[derive(Default, AppState)]
 struct Styled {
@@ -20,17 +26,19 @@ fn green() -> Color {
 }
 
 impl App for Styled {
-    fn handle(self, event: Event) -> Next<Self> {
+    type Msg = Msg;
+
+    fn handle(self, event: Event<Msg>) -> Next<Self> {
         match event {
             Event::Message { .. } => Next::state(Styled { presses: self.presses + 1 }),
             _ => Next::state(self),
         }
     }
 
-    fn view(&self) -> View {
+    fn view(&self) -> View<Msg> {
         let card = boxed()
             .role(Role::Button)
-            .on_press("press")
+            .on_press(Msg::Press)
             .style([
                 Spacing::padding(Space::Lg),
                 Background::color(Color::system("surface")),
@@ -49,7 +57,7 @@ impl App for Styled {
             row([
                 // The library's button, restyled: its own green, round corners.
                 button("Mine")
-                    .on_press("press")
+                    .on_press(Msg::Press)
                     .style([
                         Background::color(green()),
                         Border::corner(Corner::Round),
@@ -57,7 +65,7 @@ impl App for Styled {
                     ])
                     .restyle_text(Text::color(Color::rgb(0xff, 0xff, 0xff))),
                 // Rapidkoi's accent: follows the theme.
-                button("Rapidkoi's").primary().on_press("press"),
+                button("Rapidkoi's").primary().on_press(Msg::Press),
             ])
             .spacing(Space::Sm),
             card,

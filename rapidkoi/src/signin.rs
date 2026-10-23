@@ -60,7 +60,7 @@ impl SignIn {
     }
 
     /// Takes one event: the next asks, the result, or [`Progress::NotMine`].
-    pub fn on(&mut self, event: &Event) -> Progress {
+    pub fn on<M>(&mut self, event: &Event<M>) -> Progress {
         match event {
             Event::Response { msg, status, body, .. } if msg == CHALLENGE => {
                 if *status != 200 || body.is_empty() || body.len() > 1024 {
@@ -125,9 +125,9 @@ mod tests {
         let (mut s, asks) = SignIn::start("https://notes.acme.com");
         assert_eq!(asks[0], Ask::fetch(CHALLENGE, Request::get("https://notes.acme.com/rapidkoi/challenge")));
         assert_eq!(asks[1], Ask::identity(KEY));
-        assert_eq!(s.on(&Event::Answer { msg: KEY.into(), value: Some(vec![1; 32]) }), Progress::Asks(vec![]));
+        assert_eq!(s.on::<String>(&Event::Answer { msg: KEY.into(), value: Some(vec![1; 32]) }), Progress::Asks(vec![]));
         assert_eq!(s.on(&response(CHALLENGE, 200, &[9, 9])), Progress::Asks(vec![Ask::sign(SIGNATURE, &[9, 9])]));
-        match s.on(&Event::Answer { msg: SIGNATURE.into(), value: Some(vec![2; 64]) }) {
+        match s.on::<String>(&Event::Answer { msg: SIGNATURE.into(), value: Some(vec![2; 64]) }) {
             Progress::Asks(a) => match &a[0] {
                 Ask::Fetch(m, r) => {
                     assert_eq!((m.as_str(), r.method.as_str()), (POSTED, "POST"));
@@ -147,12 +147,12 @@ mod tests {
     #[test]
     fn signed_out_or_refused_it_fails() {
         let (mut s, _) = SignIn::start("https://notes.acme.com");
-        assert!(matches!(s.on(&Event::Answer { msg: KEY.into(), value: None }), Progress::Failed(_)));
-        assert!(matches!(s.on(&Event::Answer { msg: SIGNATURE.into(), value: None }), Progress::Failed(_)));
+        assert!(matches!(s.on::<String>(&Event::Answer { msg: KEY.into(), value: None }), Progress::Failed(_)));
+        assert!(matches!(s.on::<String>(&Event::Answer { msg: SIGNATURE.into(), value: None }), Progress::Failed(_)));
         assert!(matches!(s.on(&response(CHALLENGE, 500, &[])), Progress::Failed(_)));
         assert!(matches!(s.on(&response(POSTED, 401, &[])), Progress::Failed(_)));
-        let off = Event::Failed { msg: CHALLENGE.into(), error: "You turned off notes.acme.com for Notes".into() };
+        let off: Event = Event::Failed { msg: CHALLENGE.into(), error: "You turned off notes.acme.com for Notes".into() };
         assert_eq!(s.on(&off), Progress::Failed("You turned off notes.acme.com for Notes".into()));
-        assert_eq!(s.on(&Event::Opened), Progress::NotMine);
+        assert_eq!(s.on::<String>(&Event::Opened), Progress::NotMine);
     }
 }

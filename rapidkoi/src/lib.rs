@@ -50,6 +50,7 @@ extern crate self as rapidkoi;
 mod abi;
 mod fetch;
 mod home;
+mod message;
 mod prefs;
 mod signin;
 pub mod raw;
@@ -62,7 +63,8 @@ pub use fetch::{header, Request};
 pub use home::{Place, Session};
 pub use prefs::{Preference, Prefs};
 pub use signin::{Progress, SignIn};
-pub use rapidkoi_derive::State;
+pub use rapidkoi_derive::{Message, State};
+pub use message::Message;
 pub use state::{Field, Next, Simple, State};
 #[doc(hidden)]
 pub use minicbor as __minicbor;
@@ -155,13 +157,15 @@ impl Ask {
     }
 }
 
-/// A Rapidkoi app: its state, how events change it, and what it shows.
+/// A Rapidkoi app: its state, its messages, how events change it, and what it shows.
 pub trait App: State {
+    /// What its screen sends (PRP-039): an enum deriving [`Message`], or `String`.
+    type Msg: Message;
     /// The next state after `event`, what to ask Rapidkoi for, and which
     /// fields go in the window's address.
-    fn handle(self, event: Event) -> Next<Self>;
+    fn handle(self, event: Event<Self::Msg>) -> Next<Self>;
     /// What's on screen in this state.
-    fn view(&self) -> View;
+    fn view(&self) -> View<Self::Msg>;
 }
 
 /// Writes the exports the contract needs (`rapidkoi_version`, `alloc`,

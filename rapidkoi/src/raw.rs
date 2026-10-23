@@ -6,18 +6,22 @@
 //! ```
 //! use rapidkoi::raw::{boxed, text, Role};
 //! use rapidkoi::style::{Background, Color, Spacing, Space};
+//! use rapidkoi::View;
 //!
-//! let add = boxed()
+//! let add: View = boxed()
 //!     .role(Role::Button)
-//!     .on_press("add")
+//!     .on_press(String::from("add"))
 //!     .style([Background::color(Color::system("accent")), Spacing::padding(Space::Sm)])
 //!     .children([text("Add")]);
 //! ```
 
 use alloc::string::String;
 use alloc::vec::Vec;
+use core::fmt;
+use core::marker::PhantomData;
 use minicbor::Encoder;
 
+use crate::message::{bytes_of, from_bytes, Message};
 use crate::style::{Item, Style};
 
 /// A value in a node's props, as CBOR.
@@ -30,6 +34,8 @@ pub(crate) enum Val {
     Null,
     Map(Vec<(String, Val)>),
     Array(Vec<Val>),
+    /** A message, already encoded (PRP-039). */
+    Raw(Vec<u8>),
 }
 
 impl Val {
@@ -64,6 +70,7 @@ impl Val {
                     v.write(e);
                 }
             }
+            Val::Raw(bytes) => e.writer_mut().extend_from_slice(bytes),
         }
     }
 }
@@ -100,25 +107,112 @@ impl Role {
     }
 }
 
-/// One node of a screen: a box, a text or a typing box. Build them with
-/// [`boxed`], [`text`] and [`field`], or with the widgets.
-#[derive(Clone, Debug, PartialEq)]
-pub struct View {
+/// The props that carry a message.
+const MESSAGES: [&str; 3] = ["on_press", "on_change", "on_submit"];
+
+/// One node of a screen: a box, a text or a typing box, sending messages of
+/// type `M` (PRP-039). Build them with [`boxed`], [`text`] and [`field`], or
+/// with the widgets.
+pub struct View<M = String> {
     kind: &'static str,
     props: Vec<(&'static str, Val)>,
     /// The style map's keys and values, in order; a later key replaces an earlier one.
     style: Vec<(String, Val)>,
-    children: Option<Vec<View>>,
+    children: Option<Vec<View<M>>>,
     /// A widget button: disabled until it's given something to send.
     pub(crate) needs_press: bool,
+    sends: PhantomData<fn() -> M>,
 }
 
-impl View {
-    pub(crate) fn new(kind: &'static str) -> View {
-        View { kind, props: Vec::new(), style: Vec::new(), children: None, needs_press: false }
+// By hand, so `M` needn't be Clone, Debug or PartialEq: a view holds its
+// messages already encoded.
+impl<M> Clone for View<M> {
+    fn clone(&self) -> Self {
+        View {
+            kind: self.kind,
+            props: self.props.clone(),
+            style: self.style.clone(),
+            children: self.children.clone(),
+            needs_press: self.needs_press,
+            sends: PhantomData,
+        }
+    }
+}
+
+impl<M> fmt::Debug for View<M> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("View")
+            .field("kind", &self.kind)
+            .field("props", &self.props)
+            .field("style", &self.style)
+            .field("children", &self.children)
+            .finish()
+    }
+}
+
+impl<M> PartialEq for View<M> {
+    fn eq(&self, other: &Self) -> bool {
+        self.kind == other.kind
+            && self.props == other.props
+            && self.style == other.style
+            && self.children == other.children
+            && self.needs_press == other.needs_press
+    }
+}
+
+impl<M: Message> View<M> {
+    /// A box: the message a press (click, Enter, Space) sends.
+    pub fn on_press(mut self, msg: M) -> View<M> {
+        self.needs_press = false;
+        self.prop("on_press", Val::Raw(bytes_of(&msg)))
     }
 
-    pub(crate) fn prop(mut self, name: &'static str, value: Val) -> View {
+    /// A box: sends `msg` when `enabled`, else is disabled.
+    pub fn on_press_if(self, enabled: bool, msg: M) -> View<M> {
+        if enabled { self.on_press(msg) } else { self }
+    }
+
+    /// A typing box: the message each edit sends; `handle` gets the new text as `value`.
+    pub fn on_change(self, msg: M) -> View<M> {
+        self.prop("on_change", Val::Raw(bytes_of(&msg)))
+    }
+
+    /// A one-line typing box: the message Enter sends, with the text as `value`.
+    pub fn on_submit(self, msg: M) -> View<M> {
+        self.prop("on_submit", Val::Raw(bytes_of(&msg)))
+    }
+
+    /// The same view sending `wrap(m)` for each of its messages `m`: how a
+    /// part's view joins its parent's (`self.list.view().map(AppMsg::List)`).
+    pub fn map<N: Message>(self, wrap: impl Fn(M) -> N + Clone) -> View<N> {
+        let props = self
+            .props
+            .into_iter()
+            .map(|(name, v)| match v {
+                Val::Raw(b) if MESSAGES.contains(&name) => match from_bytes::<M>(&b) {
+                    Some(m) => (name, Val::Raw(bytes_of(&wrap(m)))),
+                    None => (name, Val::Raw(b)),
+                },
+                other => (name, other),
+            })
+            .collect();
+        View {
+            kind: self.kind,
+            props,
+            style: self.style,
+            children: self.children.map(|kids| kids.into_iter().map(|k| k.map(wrap.clone())).collect()),
+            needs_press: self.needs_press,
+            sends: PhantomData,
+        }
+    }
+}
+
+impl<M> View<M> {
+    pub(crate) fn new(kind: &'static str) -> View<M> {
+        View { kind, props: Vec::new(), style: Vec::new(), children: None, needs_press: false, sends: PhantomData }
+    }
+
+    pub(crate) fn prop(mut self, name: &'static str, value: Val) -> View<M> {
         self.props.retain(|(n, _)| *n != name);
         self.props.push((name, value));
         self
@@ -130,7 +224,7 @@ impl View {
 
     /// Styles it: each value replaces the same one given before, so a
     /// widget's look can be changed by styling it again.
-    pub fn style(mut self, items: impl IntoIterator<Item = Style>) -> View {
+    pub fn style(mut self, items: impl IntoIterator<Item = Style>) -> View<M> {
         for item in items {
             match item.0 {
                 Item::Set(key, value) => set(&mut self.style, key, value),
@@ -153,12 +247,12 @@ impl View {
     }
 
     /// Styles the text inside a widget (its first child): a button's label colour.
-    pub fn restyle_text(self, s: Style) -> View {
+    pub fn restyle_text(self, s: Style) -> View<M> {
         self.restyle_first(s)
     }
 
     /// Styles its first child: how a widget sets the text inside it.
-    pub(crate) fn restyle_first(mut self, s: Style) -> View {
+    pub(crate) fn restyle_first(mut self, s: Style) -> View<M> {
         if let Some(kids) = &mut self.children {
             if let Some(k) = kids.first_mut() {
                 *k = k.clone().style([s]);
@@ -168,69 +262,48 @@ impl View {
     }
 
     /// What it is, for the keyboard and screen readers.
-    pub fn role(self, r: Role) -> View {
+    pub fn role(self, r: Role) -> View<M> {
         self.prop("role", Val::Text(String::from(r.name())))
     }
 
     /// A checkbox's or switch's state.
-    pub fn checked(self, on: bool) -> View {
+    pub fn checked(self, on: bool) -> View<M> {
         self.prop("checked", Val::Bool(on))
     }
 
     /// A tab's or list item's state.
-    pub fn selected(self, on: bool) -> View {
+    pub fn selected(self, on: bool) -> View<M> {
         self.prop("selected", Val::Bool(on))
     }
 
     /// Greyed out: a pressable box sends nothing.
-    pub fn disabled(self, on: bool) -> View {
+    pub fn disabled(self, on: bool) -> View<M> {
         self.prop("disabled", Val::Bool(on))
     }
 
     /// What a screen reader says, when the text isn't enough.
-    pub fn label(self, s: &str) -> View {
+    pub fn label(self, s: &str) -> View<M> {
         self.prop("label", Val::Text(String::from(s)))
     }
 
-    /// A box: the message a press (click, Enter, Space) sends.
-    pub fn on_press(mut self, msg: &str) -> View {
-        self.needs_press = false;
-        self.prop("on_press", Val::Text(String::from(msg)))
-    }
-
-    /// A box: sends `msg` when `enabled`, else is disabled.
-    pub fn on_press_if(self, enabled: bool, msg: &str) -> View {
-        if enabled { self.on_press(msg) } else { self }
-    }
-
     /// A typing box: the hint shown while it's empty.
-    pub fn placeholder(self, hint: &str) -> View {
+    pub fn placeholder(self, hint: &str) -> View<M> {
         self.prop("placeholder", Val::Text(String::from(hint)))
     }
 
-    /// A typing box: the message each edit sends; `handle` gets the new text as `value`.
-    pub fn on_change(self, msg: &str) -> View {
-        self.prop("on_change", Val::Text(String::from(msg)))
-    }
-
-    /// A one-line typing box: the message Enter sends, with the text as `value`.
-    pub fn on_submit(self, msg: &str) -> View {
-        self.prop("on_submit", Val::Text(String::from(msg)))
-    }
-
     /// A typing box: how many lines it shows (1 to 20).
-    pub fn lines(self, n: u8) -> View {
+    pub fn lines(self, n: u8) -> View<M> {
         self.prop("lines", Val::Int(n.clamp(1, 20) as i64))
     }
 
     /// The screen's title, on the root: Rapidkoi shows it in the tab, the
     /// window title and "Where you left off".
-    pub fn screen_title(self, title: &str) -> View {
+    pub fn screen_title(self, title: &str) -> View<M> {
         self.prop("title", Val::Text(String::from(title)))
     }
 
     /// A box: its children.
-    pub fn children(mut self, kids: impl IntoIterator<Item = View>) -> View {
+    pub fn children(mut self, kids: impl IntoIterator<Item = View<M>>) -> View<M> {
         self.children = Some(kids.into_iter().collect());
         self
     }
@@ -278,17 +351,17 @@ fn set(map: &mut Vec<(String, Val)>, key: String, value: Val) {
 }
 
 /// A box: lays out its children (a column, unless styled as a row).
-pub fn boxed() -> View {
+pub fn boxed<M>() -> View<M> {
     View::new("box").children([])
 }
 
 /// A text.
-pub fn text(s: &str) -> View {
+pub fn text<M>(s: &str) -> View<M> {
     View::new("text").prop("text", Val::Text(String::from(s)))
 }
 
 /// A typing box showing `value`; give it [`View::on_change`].
-pub fn field(value: &str) -> View {
+pub fn field<M>(value: &str) -> View<M> {
     View::new("input").prop("value", Val::Text(String::from(value)))
 }
 
@@ -305,14 +378,14 @@ mod tests {
     fn a_text_encodes_exactly() {
         // {"kind": "text", "props": {"text": "hi"}}
         let expected = ["a2", "64", "6b696e64", "64", "74657874", "65", "70726f7073", "a1", "64", "74657874", "62", "6869"].concat();
-        assert_eq!(hex(&text("hi").encode()), expected);
+        assert_eq!(hex(&text::<String>("hi").encode()), expected);
     }
 
     #[test]
     fn a_styled_pressable_box_encodes_its_style_role_and_message() {
         let v = boxed()
             .role(Role::Button)
-            .on_press("add")
+            .on_press(String::from("add"))
             .style([Background::color(Color::system("accent")), Spacing::padding(Space::Sm)])
             .style([When(State::Hover, [Background::color(Color::rgb(1, 2, 3))])]);
         let bytes = v.encode();
@@ -331,7 +404,7 @@ mod tests {
 
     #[test]
     fn styling_again_replaces_the_same_value() {
-        let v = boxed().style([Spacing::gap(Space::Sm)]).style([Spacing::gap(Space::Lg)]);
+        let v = boxed::<String>().style([Spacing::gap(Space::Sm)]).style([Spacing::gap(Space::Lg)]);
         assert_eq!(v.style, alloc::vec![(String::from("gap"), Val::Text(String::from("lg")))]);
     }
 }

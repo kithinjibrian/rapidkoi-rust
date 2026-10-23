@@ -1,20 +1,25 @@
-//! `#[derive(State)]` for Rapidkoi apps (contract 4, PRP-036).
+//! Derives for Rapidkoi apps: `#[derive(State)]` (contract 4, PRP-036;
+//! nested, PRP-039) and `#[derive(Message)]` (PRP-039).
 //!
 //! A window's state crosses to Rapidkoi as a CBOR map of named fields, so
-//! Rapidkoi can read the ones an app puts in its address. The derive writes
-//! that encoding for a struct with named fields, and one typed link field
-//! per field (`Counter::count`), which [`rapidkoi::Next::link`] accepts only
-//! for simple types: a list or a map can't go in an address.
+//! Rapidkoi can read the ones an app puts in its address. `State` writes
+//! that encoding for a struct with named fields, as a whole state and as a
+//! field inside another (so a path like `editor.task` finds its way), and
+//! one typed link field per field (`Counter::count`), which
+//! `rapidkoi::Next::link` accepts only for simple types.
 //!
-//! Use it through `rapidkoi::State`, never directly.
+//! `Message` writes an enum as the messages a screen sends: a unit variant
+//! as its name, one with fields as `[name, fields…]`.
+//!
+//! Use them through `rapidkoi::State` and `rapidkoi::Message`, never directly.
 
 use proc_macro::TokenStream;
 use quote::quote;
 use syn::{parse_macro_input, Data, DeriveInput, Fields};
 
 /// Encodes the struct as a map of its field names, decodes it back (a
-/// missing field from `Default`, an unknown one skipped), and gives each
-/// field a link field of its type.
+/// missing field from `Default`, an unknown one skipped), as a whole state
+/// and as a nested field, and gives each field a link field of its type.
 #[proc_macro_derive(State)]
 pub fn derive_state(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as DeriveInput);
@@ -31,36 +36,141 @@ pub fn derive_state(input: TokenStream) -> TokenStream {
     let keys: Vec<String> = idents.iter().map(|i| i.to_string().trim_start_matches("r#").to_string()).collect();
     let count = idents.len() as u64;
     let vis = &input.vis;
+    let cbor = quote! { ::rapidkoi::__minicbor };
     quote! {
         impl ::rapidkoi::State for #name {
-            fn encode_state(&self, e: &mut ::rapidkoi::__minicbor::Encoder<::rapidkoi::__Vec<u8>>) {
-                let _ = e.map(#count);
-                #(
-                    let _ = e.str(#keys);
-                    let _ = e.encode(&self.#idents);
-                )*
+            fn encode_state(&self, e: &mut #cbor::Encoder<::rapidkoi::__Vec<u8>>) {
+                let _ = e.encode(self);
             }
 
             fn decode_state(bytes: &[u8]) -> ::core::option::Option<Self> {
-                let mut d = ::rapidkoi::__minicbor::Decoder::new(bytes);
-                let n = d.map().ok()??;
+                #cbor::decode(bytes).ok()
+            }
+        }
+
+        // Inside another state, as a map of its names too (PRP-039).
+        impl #cbor::Encode<()> for #name {
+            fn encode<W: #cbor::encode::Write>(
+                &self,
+                e: &mut #cbor::Encoder<W>,
+                _: &mut (),
+            ) -> ::core::result::Result<(), #cbor::encode::Error<W::Error>> {
+                e.map(#count)?;
+                #(
+                    e.str(#keys)?;
+                    e.encode(&self.#idents)?;
+                )*
+                ::core::result::Result::Ok(())
+            }
+        }
+
+        impl<'b> #cbor::Decode<'b, ()> for #name {
+            fn decode(
+                d: &mut #cbor::Decoder<'b>,
+                _: &mut (),
+            ) -> ::core::result::Result<Self, #cbor::decode::Error> {
+                let n = d.map()?.ok_or_else(|| #cbor::decode::Error::message("a state is a map"))?;
                 let mut s = <Self as ::core::default::Default>::default();
                 for _ in 0..n {
-                    match d.str().ok()? {
-                        #( #keys => s.#idents = d.decode().ok()?, )*
-                        _ => d.skip().ok()?,
+                    match d.str()? {
+                        #( #keys => s.#idents = d.decode()?, )*
+                        _ => d.skip()?,
                     }
                 }
-                ::core::option::Option::Some(s)
+                ::core::result::Result::Ok(s)
             }
         }
 
         #[allow(non_upper_case_globals)]
         impl #name {
             #(
-                #[doc = concat!("`", #keys, "` as a link field: for `Next::link`.")]
+                #[doc = concat!("`", #keys, "` as a link field: for `Next::link`, or `.then` from a parent's.")]
                 #vis const #idents: ::rapidkoi::Field<#name, #types> = ::rapidkoi::Field::new(#keys);
             )*
+        }
+    }
+    .into()
+}
+
+/// Writes an enum as messages: a unit variant as its name, one with fields
+/// as `[name, fields…]` (each field a `Message` too), and reads it back.
+#[proc_macro_derive(Message)]
+pub fn derive_message(input: TokenStream) -> TokenStream {
+    let input = parse_macro_input!(input as DeriveInput);
+    let name = &input.ident;
+    let variants = match &input.data {
+        Data::Enum(e) => e.variants.iter().collect::<Vec<_>>(),
+        _ => return error(name, "Message needs an enum"),
+    };
+    let mut writes = Vec::new();
+    let mut reads_unit = Vec::new();
+    let mut reads_fields = Vec::new();
+    for v in variants {
+        let vname = &v.ident;
+        let key = vname.to_string();
+        match &v.fields {
+            Fields::Unit => {
+                writes.push(quote! { #name::#vname => { let _ = e.str(#key); } });
+                reads_unit.push(quote! { #key => ::core::option::Option::Some(#name::#vname), });
+            }
+            Fields::Unnamed(f) => {
+                let n = f.unnamed.len();
+                let binds: Vec<_> = (0..n).map(|i| quote::format_ident!("f{}", i)).collect();
+                let len = (n + 1) as u64;
+                writes.push(quote! {
+                    #name::#vname(#(#binds),*) => {
+                        let _ = e.array(#len);
+                        let _ = e.str(#key);
+                        #( ::rapidkoi::Message::write(#binds, e); )*
+                    }
+                });
+                let reads: Vec<_> = (0..n).map(|_| quote! { ::rapidkoi::Message::read(d)? }).collect();
+                reads_fields.push(quote! {
+                    (#key, #len) => ::core::option::Option::Some(#name::#vname(#(#reads),*)),
+                });
+            }
+            Fields::Named(f) => {
+                let idents: Vec<_> = f.named.iter().map(|x| x.ident.clone().expect("named")).collect();
+                let len = (idents.len() + 1) as u64;
+                writes.push(quote! {
+                    #name::#vname { #(#idents),* } => {
+                        let _ = e.array(#len);
+                        let _ = e.str(#key);
+                        #( ::rapidkoi::Message::write(#idents, e); )*
+                    }
+                });
+                reads_fields.push(quote! {
+                    (#key, #len) => ::core::option::Option::Some(#name::#vname { #(#idents: ::rapidkoi::Message::read(d)?),* }),
+                });
+            }
+        }
+    }
+    let cbor = quote! { ::rapidkoi::__minicbor };
+    quote! {
+        impl ::rapidkoi::Message for #name {
+            fn write(&self, e: &mut #cbor::Encoder<::rapidkoi::__Vec<u8>>) {
+                match self {
+                    #(#writes)*
+                }
+            }
+
+            fn read(d: &mut #cbor::Decoder) -> ::core::option::Option<Self> {
+                match d.datatype().ok()? {
+                    #cbor::data::Type::String => match d.str().ok()? {
+                        #(#reads_unit)*
+                        _ => ::core::option::Option::None,
+                    },
+                    #cbor::data::Type::Array => {
+                        let n = d.array().ok()??;
+                        let key = d.str().ok()?;
+                        match (key, n) {
+                            #(#reads_fields)*
+                            _ => ::core::option::Option::None,
+                        }
+                    }
+                    _ => ::core::option::Option::None,
+                }
+            }
         }
     }
     .into()
