@@ -1,4 +1,4 @@
-//! The calling convention of the contract (version 4): bytes in through `alloc`, bytes
+//! The calling convention of the contract (version 5): bytes in through `alloc`, bytes
 //! out as (pointer, length) packed in an i64, and the CBOR of the events
 //! and the `{state, effects, link}` result of `handle`.
 //!
@@ -17,7 +17,7 @@ use crate::state::Link;
 use crate::{App, Ask, Next};
 
 #[doc(hidden)]
-pub const __CONTRACT_VERSION: i32 = 4;
+pub const __CONTRACT_VERSION: i32 = 5;
 
 struct Arena {
     live: Vec<Box<[u8]>>,

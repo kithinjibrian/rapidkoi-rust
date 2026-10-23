@@ -1,5 +1,5 @@
 [workspace]
-members = ["rapidkoi", "rapidkoi-derive", "counter", "quote", "newtab"]
+members = ["rapidkoi", "rapidkoi-derive", "counter", "quote", "newtab", "styled"]
 resolver = "2"
 
 [profile.release]

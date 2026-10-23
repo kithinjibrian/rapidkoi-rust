@@ -51,7 +51,9 @@ mod abi;
 mod fetch;
 mod home;
 mod signin;
+pub mod raw;
 mod state;
+pub mod style;
 mod view;
 
 pub use abi::{Event, __alloc, __finish, __input, __CONTRACT_VERSION};
@@ -64,7 +66,9 @@ pub use state::{Field, Next, Simple, State};
 pub use minicbor as __minicbor;
 #[doc(hidden)]
 pub use alloc::vec::Vec as __Vec;
-pub use view::{button, column, input, row, text, Space, View};
+pub use raw::View;
+pub use style::Space;
+pub use view::{button, checkbox, column, input, row, spacer, tabs, text, text_area};
 use alloc::string::String;
 use alloc::vec::Vec;
 
