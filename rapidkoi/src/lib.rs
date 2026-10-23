@@ -47,7 +47,7 @@ mod view;
 
 pub use abi::{Event, __alloc, __finish, __input, __CONTRACT_VERSION};
 pub use fetch::{header, Request};
-pub use home::Place;
+pub use home::{Place, Session};
 pub use signin::{Progress, SignIn};
 pub use view::{button, column, input, row, text, Space, View};
 use alloc::string::String;
@@ -75,6 +75,10 @@ pub enum Ask {
     OpenPin(String, u32),
     /// Open where the person left off (needs the built-in `open_apps`); not answered.
     ContinueLeftOff(String),
+    /// The person's last session, if there's one to restore (needs the built-in `restore_session`).
+    Session(String),
+    /// Restore the person's last session (needs the built-in `restore_session`); not answered.
+    RestoreSession(String),
 }
 
 impl Ask {
@@ -106,6 +110,15 @@ impl Ask {
     /// Asks Rapidkoi to open where the person left off.
     pub fn continue_left_off(msg: &str) -> Ask {
         Ask::ContinueLeftOff(msg.into())
+    }
+    /// Asks whether there's a last session to restore: an [`Event::Data`]
+    /// to read with [`Session::read`], or an [`Event::Answer`] with nothing.
+    pub fn session(msg: &str) -> Ask {
+        Ask::Session(msg.into())
+    }
+    /// Asks Rapidkoi to restore the last session.
+    pub fn restore_session(msg: &str) -> Ask {
+        Ask::RestoreSession(msg.into())
     }
 }
 

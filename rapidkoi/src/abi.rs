@@ -228,6 +228,8 @@ fn result<A: App>(app: &A, asks: &[Ask]) -> Vec<u8> {
             Ask::Pins(msg) => plain(&mut e, "pins", msg),
             Ask::LeftOff(msg) => plain(&mut e, "left_off", msg),
             Ask::ContinueLeftOff(msg) => plain(&mut e, "continue", msg),
+            Ask::Session(msg) => plain(&mut e, "session", msg),
+            Ask::RestoreSession(msg) => plain(&mut e, "restore_session", msg),
             Ask::OpenPin(msg, index) => {
                 let _ = e.map(3).and_then(|e| e.str("kind")).and_then(|e| e.str("open_pin"));
                 let _ = e.str("msg").and_then(|e| e.str(msg));

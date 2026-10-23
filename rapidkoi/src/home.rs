@@ -37,6 +37,37 @@ impl Place {
     }
 }
 
+/// The person's last session, as Rapidkoi answers [`crate::Ask::session`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Session {
+    /// How many windows it had.
+    pub count: u32,
+    /// The apps they were of, each once: a host or a file's name.
+    pub apps: Vec<String>,
+}
+
+impl Session {
+    /// Reads a session answer; `None` if it isn't one.
+    pub fn read(cbor: &[u8]) -> Option<Session> {
+        let mut d = Decoder::new(cbor);
+        let n = d.map().ok()??;
+        let (mut count, mut apps) = (None, Vec::new());
+        for _ in 0..n {
+            match d.str().ok()? {
+                "count" => count = Some(d.u32().ok()?),
+                "apps" => {
+                    let k = d.array().ok()??;
+                    for _ in 0..k {
+                        apps.push(String::from(d.str().ok()?));
+                    }
+                }
+                _ => d.skip().ok()?,
+            }
+        }
+        Some(Session { count: count?, apps })
+    }
+}
+
 fn read(d: &mut Decoder) -> Option<Place> {
     let n = d.map().ok()??;
     let (mut name, mut place, mut icon, mut title) = (None, None, None, None);
@@ -78,6 +109,16 @@ mod tests {
         let mut e = Encoder::new(Vec::new());
         place(&mut e, "Quote", "quote.dafifi.net", Some("Quote of the day"));
         assert_eq!(Place::one(&e.into_writer()).unwrap().title.as_deref(), Some("Quote of the day"));
+    }
+
+    #[test]
+    fn a_session_reads() {
+        let mut e = Encoder::new(Vec::new());
+        e.map(2).unwrap();
+        e.str("count").unwrap().u32(3).unwrap();
+        e.str("apps").unwrap().array(1).unwrap().str("quote.dafifi.net").unwrap();
+        assert_eq!(Session::read(&e.into_writer()), Some(Session { count: 3, apps: vec!["quote.dafifi.net".into()] }));
+        assert_eq!(Session::read(&[0x80]), None);
     }
 
     #[test]
