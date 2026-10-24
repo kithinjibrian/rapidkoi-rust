@@ -1,7 +1,7 @@
 //! The Rapidkoi demo: a counter and a greeting.
 //!
 //! Build: `cargo build --release --target wasm32-unknown-unknown` in
-//! `guest/rust/`, then `./main guest/rust/target/wasm32-unknown-unknown/release/counter.wasm`.
+//! this repository's root, then open `target/wasm32-unknown-unknown/release/counter.wasm` in Rapidkoi.
 
 use rapidkoi::{button, column, input, row, text, App, Ask, Event, Message, Next, Space, State, View, FIRST_NAME};
 

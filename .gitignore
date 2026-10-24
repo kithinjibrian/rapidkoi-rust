@@ -1,0 +1,3 @@
+/target
+# A published site (./main publish): built, never committed.
+/examples/*/site

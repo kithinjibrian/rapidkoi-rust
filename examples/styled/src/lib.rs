@@ -3,7 +3,7 @@
 //! from a bare box. Press any of them to count.
 //!
 //! Build: `cargo build --release --target wasm32-unknown-unknown` in
-//! `guest/rust/`, then `./main guest/rust/target/wasm32-unknown-unknown/release/styled.wasm`.
+//! this repository's root, then open `target/wasm32-unknown-unknown/release/styled.wasm` in Rapidkoi.
 
 use rapidkoi::raw::{boxed, Role};
 use rapidkoi::style::{Background, Border, Color, Corner, Font, Shadow, Space, Spacing, State, Text, TextSize, Weight, When};

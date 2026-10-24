@@ -8,5 +8,5 @@ license = "GPL-3.0-only"
 crate-type = ["cdylib"]
 
 [dependencies]
-rapidkoi = { path = "../rapidkoi" }
+rapidkoi = { path = "../../rapidkoi" }
 minicbor = { version = "2", features = ["alloc", "derive"] }
