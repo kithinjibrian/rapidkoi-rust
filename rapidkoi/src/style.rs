@@ -377,4 +377,19 @@ impl Layout {
     pub fn grow() -> Style {
         set("grow", Val::Bool(true))
     }
+    /// Scroll up and down: as tall as its content until the room runs out,
+    /// then it scrolls; with [`Layout::grow`], it fills the room left.
+    /// Rapidkoi never scrolls an app's page, so whatever can grow past the
+    /// window goes in one of these. Not inside another that scrolls the same way.
+    pub fn scroll() -> Style {
+        set("scroll", word("vertical"))
+    }
+    /// Scroll side to side, as [`Layout::scroll`] does up and down.
+    pub fn scroll_x() -> Style {
+        set("scroll", word("horizontal"))
+    }
+    /// Scroll both ways.
+    pub fn scroll_both() -> Style {
+        set("scroll", word("both"))
+    }
 }

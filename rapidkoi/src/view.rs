@@ -231,6 +231,20 @@ mod tests {
     }
 
     #[test]
+    fn scrolling_styles_say_which_way() {
+        // Contract 7 (PRP-046): `scroll` is vertical, horizontal or both.
+        use crate::style::Layout;
+        let has = |v: &View<String>, word: &str| {
+            let bytes = v.encode();
+            bytes.windows(word.len()).any(|w| w == word.as_bytes())
+        };
+        assert!(has(&column::<String>([]).style([Layout::scroll()]), "vertical"));
+        assert!(has(&column::<String>([]).style([Layout::scroll_x()]), "horizontal"));
+        assert!(has(&column::<String>([]).style([Layout::scroll_both()]), "both"));
+        assert!(!has(&column::<String>([]), "scroll"));
+    }
+
+    #[test]
     fn a_typing_box_carries_its_label() {
         // Contract 7: Rapidkoi names the box by it.
         let k = keys(&input::<String>("").placeholder("Search").label("Search notes").on_change(s("search")));
