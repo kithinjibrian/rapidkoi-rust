@@ -76,6 +76,13 @@ pub fn When(state: State, items: impl IntoIterator<Item = Style>) -> Style {
 pub struct Color(Val);
 
 impl Color {
+    /// As a prop's value: a picture's colour (PRP-047).
+    pub(crate) fn into_val(self) -> Val {
+        self.0
+    }
+}
+
+impl Color {
     /// One of Rapidkoi's colours: `background`, `surface`, `text`,
     /// `text_dim`, `accent`, `on_accent`, `border`, `danger`, `on_danger`.
     /// It follows the person's theme; the app never learns its value.

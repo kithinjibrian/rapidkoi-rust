@@ -38,6 +38,10 @@
 //! can hold [`FIRST_NAME`] and [`LAST_NAME`]: Rapidkoi fills in the
 //! person's name while drawing, so the app shows it without ever knowing it.
 //!
+//! Pictures come from the app's bundle or its servers with [`image`]
+//! (`image("asset:trash.svg")`, `.fit(Fit::Cover)`, `.color(...)`); a box
+//! scrolls with `Layout::scroll()`: Rapidkoi never scrolls an app's page.
+//!
 //! An app can reach its own server and the servers it declares with
 //! [`Ask::fetch`]; the reply is an [`Event::Response`] or [`Event::Failed`].
 //! [`SignIn`] signs in to the app's own server with the person's key.
@@ -54,6 +58,7 @@ mod home;
 #[path = "kinds.rs"]
 pub mod __kinds;
 mod message;
+mod picture;
 mod prefs;
 mod signin;
 pub mod raw;
@@ -70,6 +75,7 @@ pub use storage::Value;
 pub use signin::{Progress, SignIn};
 pub use rapidkoi_derive::{Message, State};
 pub use message::Message;
+pub use picture::{image, Fit};
 pub use state::{Field, Next, Simple, State};
 #[doc(hidden)]
 pub use minicbor as __minicbor;
