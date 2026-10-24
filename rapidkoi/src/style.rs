@@ -207,6 +207,11 @@ impl Text {
     pub fn color(c: Color) -> Style {
         set("color", c.0)
     }
+
+    /// One line, cut with "…" when its box is narrower; without it, text wraps to its box.
+    pub fn truncate() -> Style {
+        set("truncate", Val::Bool(true))
+    }
 }
 
 /// Text's typeface, size and weight.
