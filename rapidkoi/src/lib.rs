@@ -3,7 +3,7 @@
 //! An app is two functions over its state: [`App::handle`], which answers
 //! everything that happens (an [`Event`]: a fresh start, being opened, its
 //! own messages, Rapidkoi's answers), and [`App::view`], what's on screen.
-//! Rapidkoi holds the state between calls as named fields (contract 4), so
+//! Rapidkoi holds the state between calls as named fields (contract 7), so
 //! the state type derives [`State`] and `Default` (the start of a fresh
 //! run). [`export!`] writes the WebAssembly exports the shell calls.
 //!
@@ -50,6 +50,9 @@ extern crate self as rapidkoi;
 mod abi;
 mod fetch;
 mod home;
+#[doc(hidden)]
+#[path = "kinds.rs"]
+pub mod __kinds;
 mod message;
 mod prefs;
 mod signin;
@@ -72,6 +75,8 @@ pub use state::{Field, Next, Simple, State};
 pub use minicbor as __minicbor;
 #[doc(hidden)]
 pub use alloc::vec::Vec as __Vec;
+#[doc(hidden)]
+pub use alloc::string::String as __String;
 pub use raw::View;
 pub use style::Space;
 pub use view::{button, checkbox, column, input, row, spacer, tabs, text, text_area};
@@ -108,7 +113,7 @@ pub enum Ask {
     Preferences(String),
     /// Change one of them (needs the built-in `change_settings`); not answered.
     SetPreference(String, Preference),
-    /// One statement against the app's database (contract 6): rows, or why not.
+    /// One statement against the app's database: rows, or why not.
     Sql(String, String, Vec<Value>),
     /// Statements as one transaction: what changed, or why not (nothing kept).
     SqlBatch(String, Vec<(String, Vec<Value>)>),

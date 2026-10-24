@@ -231,6 +231,13 @@ mod tests {
     }
 
     #[test]
+    fn a_typing_box_carries_its_label() {
+        // Contract 7: Rapidkoi names the box by it.
+        let k = keys(&input::<String>("").placeholder("Search").label("Search notes").on_change(s("search")));
+        assert!(k.iter().any(|x| x == "label"));
+    }
+
+    #[test]
     fn a_checkbox_says_what_it_is() {
         let k = keys(&checkbox("Buy milk", true).on_toggle(s("toggle:3")));
         assert_eq!(k, ["role", "checked", "label", "on_press", "style"]);

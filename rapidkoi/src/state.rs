@@ -17,6 +17,12 @@ pub trait State: Sized + Default {
     fn encode_state(&self, e: &mut Encoder<Vec<u8>>);
     /// Reads it back; a missing field is its default, an unknown one skipped.
     fn decode_state(bytes: &[u8]) -> Option<Self>;
+    /// What kind each simple field is, by its path (contract 7): `number`,
+    /// `text` or `bool`, an `Option` as its inner type's. Sent with `on_init`,
+    /// so a link can set a field that starts empty. Written by the derive.
+    fn kinds() -> Vec<(String, &'static str)> {
+        Vec::new()
+    }
 }
 
 /// The most steps a link path may take (PRP-039): `a.b.c.d`.
@@ -87,15 +93,22 @@ impl<S, T> Copy for Field<S, T> {}
 
 /// A value that can go in an address: a number, text, true/false, or an
 /// optional one of those (none leaves it out). Lists and maps can't.
-pub trait Simple {}
-
-macro_rules! simple {
-    ($($t:ty),*) => { $( impl Simple for $t {} )* };
+pub trait Simple {
+    /// Its kind in `kinds` (contract 7): `number`, `text` or `bool`.
+    const KIND: &'static str;
 }
 
-simple!(i8, i16, i32, i64, u8, u16, u32, u64, f32, f64, bool, alloc::string::String);
+macro_rules! simple {
+    ($kind:literal: $($t:ty),*) => { $( impl Simple for $t { const KIND: &'static str = $kind; } )* };
+}
 
-impl<T: Simple> Simple for Option<T> {}
+simple!("number": i8, i16, i32, i64, u8, u16, u32, u64, f32, f64);
+simple!("text": alloc::string::String);
+simple!("bool": bool);
+
+impl<T: Simple> Simple for Option<T> {
+    const KIND: &'static str = T::KIND;
+}
 
 /// What the address names after an event.
 #[derive(Debug, Clone, PartialEq, Eq)]
