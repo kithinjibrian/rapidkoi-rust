@@ -192,6 +192,19 @@ pub fn spacer<M>() -> View<M> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn truncated_text_says_so() {
+        let v = crate::text::<String>("A long line").style([crate::style::Text::truncate()]);
+        let bytes = v.encode();
+        let mut d = minicbor::Decoder::new(&bytes);
+        assert_eq!(d.map().unwrap(), Some(2));
+        assert_eq!((d.str().unwrap(), d.str().unwrap()), ("kind", "text"));
+        assert_eq!((d.str().unwrap(), d.map().unwrap()), ("props", Some(2)));
+        assert_eq!((d.str().unwrap(), d.str().unwrap()), ("text", "A long line"));
+        assert_eq!((d.str().unwrap(), d.map().unwrap()), ("style", Some(1)));
+        assert_eq!((d.str().unwrap(), d.bool().unwrap()), ("truncate", true));
+    }
+
     use super::*;
     use alloc::string::String;
     use minicbor::Decoder;
