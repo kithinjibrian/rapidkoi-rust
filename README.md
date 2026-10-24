@@ -2,7 +2,7 @@
 
 Write [Rapidkoi](https://github.com/kithinjibrian/rapidkoi) apps in Rust. An app is a WebAssembly module: Rapidkoi runs it sandboxed and draws the screens it describes.
 
-- `rapidkoi/`: the library. Your app's state, its events, its screens (boxes, texts, inputs, styles and roles), links, storage (SQLite), network requests and sign-in. It speaks Rapidkoi's contract 6.
+- `rapidkoi/`: the library. Your app's state, its events, its screens (boxes, texts, inputs, styles and roles), links, storage (SQLite), network requests and sign-in. It speaks Rapidkoi's contract 7, the only one Rapidkoi runs. A link field that can be empty is an `Option`: none leaves it out of the address, and a link can still set it.
 - `rapidkoi-derive/`: `#[derive(State)]` and `#[derive(Message)]`.
 - `examples/counter/`: the shortest app: a count in its address, and a greeting.
 - `examples/styled/`: styling, shown.

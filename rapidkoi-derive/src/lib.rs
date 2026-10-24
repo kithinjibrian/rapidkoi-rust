@@ -1,5 +1,5 @@
-//! Derives for Rapidkoi apps: `#[derive(State)]` (contract 4, PRP-036;
-//! nested, PRP-039) and `#[derive(Message)]` (PRP-039).
+//! Derives for Rapidkoi apps: `#[derive(State)]` (PRP-036; nested,
+//! PRP-039; `kinds`, contract 7) and `#[derive(Message)]` (PRP-039).
 //!
 //! A window's state crosses to Rapidkoi as a CBOR map of named fields, so
 //! Rapidkoi can read the ones an app puts in its address. `State` writes
@@ -45,6 +45,15 @@ pub fn derive_state(input: TokenStream) -> TokenStream {
 
             fn decode_state(bytes: &[u8]) -> ::core::option::Option<Self> {
                 #cbor::decode(bytes).ok()
+            }
+
+            // Each field's kind, picked by its type (contract 7, `rapidkoi::__kinds`).
+            fn kinds() -> ::rapidkoi::__Vec<(::rapidkoi::__String, &'static str)> {
+                #[allow(unused_imports)]
+                use ::rapidkoi::__kinds::{NestedKind as _, NoKind as _, SimpleKind as _};
+                let mut out = ::rapidkoi::__Vec::new();
+                #( (&&&::rapidkoi::__kinds::Probe::<#types>::new()).kinds_into(#keys, &mut out); )*
+                out
             }
         }
 

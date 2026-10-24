@@ -1,6 +1,6 @@
-//! The calling convention of the contract (version 5): bytes in through `alloc`, bytes
+//! The calling convention of the contract (version 7): bytes in through `alloc`, bytes
 //! out as (pointer, length) packed in an i64, and the CBOR of the events
-//! and the `{state, effects, link}` result of `handle`.
+//! and the `{state, effects, link, kinds}` result of `handle`.
 //!
 //! Memory: every buffer handed to or returned from Rapidkoi lives in `LIVE`
 //! until the first `alloc` after an export has returned. By then Rapidkoi
@@ -17,7 +17,7 @@ use crate::state::Link;
 use crate::{App, Ask, Message, Next};
 
 #[doc(hidden)]
-pub const __CONTRACT_VERSION: i32 = 6;
+pub const __CONTRACT_VERSION: i32 = 7;
 
 struct Arena {
     live: Vec<Box<[u8]>>,
@@ -223,18 +223,21 @@ fn load<A: App>(state: &[u8]) -> A {
 pub fn abi_handle<A: App>(state: &[u8], event: &[u8]) -> Vec<u8> {
     match Event::<A::Msg>::decode(event) {
         // A fresh start has no state yet: begin from Default.
-        Some(Event::Init) => result(&A::default().handle(Event::Init)),
-        Some(e) => result(&load::<A>(state).handle(e)),
+        // `kinds` goes with the fresh state: Rapidkoi sets a link's fields in it next.
+        Some(Event::Init) => result(&A::default().handle(Event::Init), &A::kinds()),
+        Some(e) => result(&load::<A>(state).handle(e), &[]),
         // A kind of event this app doesn't know: nothing changes.
-        None => result(&Next::state(load::<A>(state))),
+        None => result(&Next::state(load::<A>(state)), &[]),
     }
 }
 
-/// `{"state": {…}, "effects": [...], "link": [...] or null}`, `link` only
-/// when it changes; writing to a Vec never fails.
-fn result<A: App>(next: &Next<A>) -> Vec<u8> {
+/// `{"state": {…}, "effects": [...], "link": [...] or null, "kinds": {…}}`,
+/// `link` only when it changes, `kinds` only when given (the first 16);
+/// writing to a Vec never fails.
+fn result<A: App>(next: &Next<A>, kinds: &[(String, &'static str)]) -> Vec<u8> {
+    let kinds = &kinds[..kinds.len().min(MAX_KINDS)];
     let mut e = Encoder::new(Vec::new());
-    let _ = e.map(if next.link == Link::Keep { 2 } else { 3 });
+    let _ = e.map(2 + u64::from(next.link != Link::Keep) + u64::from(!kinds.is_empty()));
     let _ = e.str("state");
     next.state.encode_state(&mut e);
     let asks = &next.asks;
@@ -314,8 +317,17 @@ fn result<A: App>(next: &Next<A>) -> Vec<u8> {
             }
         }
     }
+    if !kinds.is_empty() {
+        let _ = e.str("kinds").and_then(|e| e.map(kinds.len() as u64));
+        for (path, kind) in kinds {
+            let _ = e.str(path).and_then(|e| e.str(kind));
+        }
+    }
     e.into_writer()
 }
+
+/// The most link fields `kinds` may name (contract 7).
+const MAX_KINDS: usize = 16;
 
 /// An effect of only a kind and a msg.
 fn plain(e: &mut Encoder<Vec<u8>>, kind: &str, msg: &str) {
@@ -401,7 +413,7 @@ mod tests {
             fn view(&self) -> crate::View { crate::text("") }
         }
         let asks = [Ask::pins("p"), Ask::left_off("l"), Ask::open_pin("o", 2), Ask::continue_left_off("c")];
-        let bytes = result(&asks.iter().cloned().fold(Next::state(S { n: 1 }), Next::ask));
+        let bytes = result(&asks.iter().cloned().fold(Next::state(S { n: 1 }), Next::ask), &[]);
         let mut d = Decoder::new(&bytes);
         d.map().unwrap();
         d.str().unwrap();
@@ -435,7 +447,7 @@ mod tests {
             fn view(&self) -> crate::View { crate::text("") }
         }
         let post = crate::Request::post("https://api.acme.com/n", &[1]).header("x-a", "b");
-        let bytes = result(&Next::state(S { n: 1 }).ask(Ask::identity("me")).ask(Ask::sign("go", &[7, 8])).ask(Ask::fetch("f", post)));
+        let bytes = result(&Next::state(S { n: 1 }).ask(Ask::identity("me")).ask(Ask::sign("go", &[7, 8])).ask(Ask::fetch("f", post)), &[]);
         let mut d = Decoder::new(&bytes);
         assert_eq!(d.map().unwrap(), Some(2));
         assert_eq!(d.str().unwrap(), "state");
@@ -458,5 +470,34 @@ mod tests {
         assert_eq!((d.str().unwrap(), d.map().unwrap()), ("headers", Some(1)));
         assert_eq!((d.str().unwrap(), d.str().unwrap()), ("x-a", "b"));
         assert_eq!((d.str().unwrap(), d.bytes().unwrap()), ("body", &[1u8][..]));
+    }
+
+    #[test]
+    fn the_init_result_carries_kinds_and_the_contract_is_7() {
+        #[derive(Default, crate::State)]
+        struct S {
+            note: Option<u32>,
+            notes: Vec<String>,
+        }
+        impl App for S {
+            type Msg = String;
+            fn handle(self, _: Event) -> Next<Self> { Next::state(self) }
+            fn view(&self) -> crate::View { crate::text("") }
+        }
+        assert_eq!(__CONTRACT_VERSION, 7);
+        let bytes = result(&Next::state(S::default()), &<S as crate::State>::kinds());
+        let mut d = Decoder::new(&bytes);
+        assert_eq!(d.map().unwrap(), Some(3));
+        d.str().unwrap();
+        d.skip().unwrap();
+        d.str().unwrap();
+        d.skip().unwrap();
+        assert_eq!(d.str().unwrap(), "kinds");
+        assert_eq!(d.map().unwrap(), Some(1));
+        assert_eq!((d.str().unwrap(), d.str().unwrap()), ("note", "number"));
+        // Other results leave it out.
+        let plain = result(&Next::state(S::default()), &[]);
+        let mut other = Decoder::new(&plain);
+        assert_eq!(other.map().unwrap(), Some(2));
     }
 }
