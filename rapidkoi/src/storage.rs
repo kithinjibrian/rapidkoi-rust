@@ -3,6 +3,7 @@
 //! [`crate::Ask::sql_batch`] (several, as one transaction); the answer is an
 //! [`crate::Event::Rows`], an [`crate::Event::Done`], or an
 //! [`crate::Event::Failed`] saying why. Values always go in as parameters.
+//! A batch can also store and remove blobs ([`crate::Step`], contract 9).
 //!
 //! ```
 //! use rapidkoi::{params, Ask};

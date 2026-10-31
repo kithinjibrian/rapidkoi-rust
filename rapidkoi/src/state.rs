@@ -177,8 +177,8 @@ impl<S> Next<S> {
     }
 
     /// Asks Rapidkoi for something; the reply comes as an event.
-    pub fn ask(mut self, ask: Ask) -> Self {
-        self.asks.push(ask);
+    pub fn ask(mut self, ask: impl Into<Ask>) -> Self {
+        self.asks.push(ask.into());
         self
     }
 
