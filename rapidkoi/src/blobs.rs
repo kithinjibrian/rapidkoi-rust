@@ -55,6 +55,9 @@ pub enum Step {
     BlobSet { key: String, bytes: Vec<u8>, owner: Option<(String, Value)> },
     /// Remove a key; no such key is nothing to do.
     BlobDelete(String),
+    /// Give an ownerless blob (one from [`crate::Ask::file_open`]) an owner
+    /// row (table, primary key), under the same rules as [`Step::owner`].
+    BlobOwn { key: String, owner: (String, Value) },
 }
 
 impl Step {
@@ -68,13 +71,24 @@ impl Step {
         Step::BlobSet { key: String::from(key), bytes: bytes.into(), owner: None }
     }
 
-    /// A [`Step::blob_set`]'s owner: the row of `table` whose primary key
-    /// is `key`. Deleting that row deletes the blob. Nothing on other steps.
+    /// A [`Step::blob_set`]'s owner (or a new one for [`Step::blob_own`]):
+    /// the row of `table` whose primary key is `key`. Deleting that row
+    /// deletes the blob. Nothing on other steps.
     pub fn owner(self, table: &str, key: impl Into<Value>) -> Step {
         match self {
             Step::BlobSet { key: k, bytes, .. } => Step::BlobSet { key: k, bytes, owner: Some((String::from(table), key.into())) },
+            Step::BlobOwn { key: k, .. } => Step::BlobOwn { key: k, owner: (String::from(table), key.into()) },
             other => other,
         }
+    }
+
+    /// Gives the blob at `key`, stored with no owner (as
+    /// [`crate::Ask::file_open`] stores a file), the row of `table` whose
+    /// primary key is `id` as its owner: deleting the row deletes it. The
+    /// table must exist before the batch, with a primary key of one column.
+    pub fn blob_own(key: &str, table: &str, id: impl Into<Value>) -> Step {
+        debug_assert!(key_ok(key), "a blob's key is 1 to 256 bytes, no control characters");
+        Step::BlobOwn { key: String::from(key), owner: (String::from(table), id.into()) }
     }
 
     /// Removes `key` and its bytes.
@@ -102,6 +116,12 @@ impl Step {
             }
             Step::BlobDelete(key) => {
                 let _ = e.map(1).and_then(|e| e.str("blob_delete")).and_then(|e| e.str(key));
+            }
+            Step::BlobOwn { key, owner: (table, k) } => {
+                let _ = e.map(2).and_then(|e| e.str("blob_own")).and_then(|e| e.str(key));
+                let _ = e.str("owner").and_then(|e| e.map(2)).and_then(|e| e.str("table")).and_then(|e| e.str(table));
+                let _ = e.str("key");
+                k.write(e);
             }
         }
     }
@@ -342,24 +362,42 @@ fn line(b: &[u8]) -> String {
 /// The readers kept in a state's bytes; none when there are none, or the
 /// field can't be read.
 pub(crate) fn readers_in(state: &[u8]) -> Vec<Reader> {
-    let mut d = Decoder::new(state);
     let read = |d: &mut Decoder| -> Option<Vec<Reader>> {
-        let n = d.map().ok()??;
-        for _ in 0..n {
-            if d.str().ok()? == READERS {
-                let k = d.array().ok()??;
-                return (0..k).map(|_| Reader::read(d)).collect();
-            }
-            d.skip().ok()?;
-        }
-        Some(Vec::new())
+        let k = d.array().ok()??;
+        (0..k).map(|_| Reader::read(d)).collect()
     };
-    read(&mut d).unwrap_or_default()
+    field_of(state, READERS).and_then(|mut d| read(&mut d)).unwrap_or_default()
 }
 
-/// The app's encoded state with the readers added as one more field.
-pub(crate) fn with_readers(state: Vec<u8>, readers: &[Reader]) -> Vec<u8> {
+/// The readers as the value of their field: none is no field.
+pub(crate) fn readers_field(readers: &[Reader]) -> Option<(&'static str, Vec<u8>)> {
     if readers.is_empty() {
+        return None;
+    }
+    let mut e = Encoder::new(Vec::new());
+    let _ = e.array(readers.len() as u64);
+    for r in readers {
+        r.write(&mut e);
+    }
+    Some((READERS, e.into_writer()))
+}
+
+/// A decoder at the value of the state's field `name`, if it has one.
+pub(crate) fn field_of<'a>(state: &'a [u8], name: &str) -> Option<Decoder<'a>> {
+    let mut d = Decoder::new(state);
+    let n = d.map().ok()??;
+    for _ in 0..n {
+        if d.str().ok()? == name {
+            return Some(d);
+        }
+        d.skip().ok()?;
+    }
+    None
+}
+
+/// The app's encoded state with the SDK's own fields (name, encoded value) added.
+pub(crate) fn with_fields(state: Vec<u8>, fields: &[(&str, Vec<u8>)]) -> Vec<u8> {
+    if fields.is_empty() {
         return state;
     }
     let mut d = Decoder::new(&state);
@@ -368,15 +406,16 @@ pub(crate) fn with_readers(state: Vec<u8>, readers: &[Reader]) -> Vec<u8> {
         _ => return state,
     };
     let mut e = Encoder::new(Vec::new());
-    let _ = e.map(n + 1);
+    let _ = e.map(n + fields.len() as u64);
     let mut out = e.into_writer();
     out.extend_from_slice(&state[d.position()..]);
-    let mut e = Encoder::new(out);
-    let _ = e.str(READERS).and_then(|e| e.array(readers.len() as u64));
-    for r in readers {
-        r.write(&mut e);
+    for (name, value) in fields {
+        let mut e = Encoder::new(out);
+        let _ = e.str(name);
+        out = e.into_writer();
+        out.extend_from_slice(value);
     }
-    e.into_writer()
+    out
 }
 
 #[cfg(test)]
@@ -422,7 +461,7 @@ mod tests {
         e.map(1).unwrap().str("n").unwrap().i64(3).unwrap();
         let mut r = Reader::start("log", "k");
         r.take(b"ab", 10, alloc::vec![9; 32]);
-        let state = with_readers(e.into_writer(), &[r.clone()]);
+        let state = with_fields(e.into_writer(), &[readers_field(&[r.clone()]).unwrap()]);
         assert_eq!(readers_in(&state), alloc::vec![r]);
         let mut d = Decoder::new(&state);
         assert_eq!(d.map().unwrap(), Some(2));
