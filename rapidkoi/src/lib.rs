@@ -62,6 +62,19 @@
 //! picture with [`image_blob`] and goes as a request's body with
 //! [`Request::body_blob`], its bytes never passing through the app.
 //!
+//! The person can hand an app a single file (contract 9, DECISION-089),
+//! always in Rapidkoi's own dialog: **choosing is the permission**.
+//! [`Ask::file_open`] stores the chosen file as a blob and answers
+//! [`Event::FileOpened`] with its **name, never its path**, and its size;
+//! [`Step::blob_own`] (or [`Ask::attach_blob`]) gives it to a row. Opened
+//! with `.edit()`, the answer carries a **handle**: [`Ask::file_save`]
+//! writes a blob back over that file, and **never over another program's
+//! change** ("This file changed since it was opened"; nothing is written).
+//! [`Ask::file_save_as`] saves to a file the person chooses, and exports.
+//! Handles last while the window is open, so keep them in its state and
+//! **never in a link**. **Cancelling isn't an error**:
+//! [`Event::FileCancelled`]. A file is at most 16 MB.
+//!
 //! An app can reach its own server and the servers it declares with
 //! [`Ask::fetch`]; the reply is an [`Event::Response`] or [`Event::Failed`].
 //! [`SignIn`] signs in to the app's own server with the person's key.
@@ -74,6 +87,7 @@ extern crate self as rapidkoi;
 mod abi;
 mod blobs;
 mod fetch;
+pub mod files;
 mod home;
 #[doc(hidden)]
 #[path = "kinds.rs"]
@@ -92,6 +106,7 @@ mod view;
 pub use blobs::{BlobGet, BlobInfo, BlobList, Step};
 pub use abi::{Event, __alloc, __finish, __input, __CONTRACT_VERSION};
 pub use fetch::{header, Request};
+pub use files::{FileOpen, FileSave, FileSaveAs, MAX_ACCEPT};
 pub use home::{Place, Session};
 pub use prefs::{Preference, Prefs};
 pub use storage::Value;
@@ -150,6 +165,12 @@ pub enum Ask {
     BlobList(BlobList),
     /// A blob read line by line: [`Event::Lines`] until `done` (the SDK's own, over `blob_get`).
     BlobLines(String, String),
+    /// A file the person chooses, stored as a blob (contract 9, DECISION-089).
+    FileOpen(FileOpen),
+    /// A blob's bytes saved over a file opened to modify.
+    FileSave(FileSave),
+    /// A blob's bytes saved to a file the person chooses.
+    FileSaveAs(FileSaveAs),
 }
 
 impl Ask {
@@ -254,6 +275,52 @@ impl Ask {
     pub fn blob_lines(msg: &str, key: &str) -> Ask {
         Ask::BlobLines(msg.into(), key.into())
     }
+    /// Asks the person to choose a file in Rapidkoi's dialog ("Open a file
+    /// for {app}"), stored as the blob `key` (replacing it) with no owner:
+    /// an [`Event::FileOpened`] with its name and size, an
+    /// [`Event::FileCancelled`], or an [`Event::Failed`]. `.accept([...])`
+    /// filters what the dialog shows; `.edit()` opens it to modify, and the
+    /// answer carries a handle for [`Ask::file_save`]. The rules, and
+    /// Rapidkoi's sentences when it fails: [`files`].
+    ///
+    /// ```
+    /// use rapidkoi::Ask;
+    /// let photo = Ask::file_open("attached", "photo-3").accept(["png", "jpg", "jpeg"]);
+    /// let doc = Ask::file_open("opened", "doc").edit();
+    /// ```
+    pub fn file_open(msg: &str, key: &str) -> FileOpen {
+        files::file_open(msg, key)
+    }
+    /// Writes blob `key`'s bytes over the file `handle` names (from
+    /// [`Event::FileOpened`] or [`Event::FileSavedAs`]), safely: an
+    /// [`Event::FileSaved`], or an [`Event::Failed`] with nothing written
+    /// ("This file changed since it was opened": offer to open it again,
+    /// or to save as). Store the bytes first, and ask after that batch's answer.
+    pub fn file_save(msg: &str, handle: &str, key: &str) -> Ask {
+        Ask::FileSave(files::file_save(msg, handle, key))
+    }
+    /// Asks the person where to save blob `key`'s bytes, in Rapidkoi's
+    /// dialog ("Save a file from {app}"; `.name(n)` suggests a name): an
+    /// [`Event::FileSavedAs`] with a handle to save to it again, an
+    /// [`Event::FileCancelled`], or an [`Event::Failed`]. Also how an app exports.
+    pub fn file_save_as(msg: &str, key: &str) -> FileSaveAs {
+        files::file_save_as(msg, key)
+    }
+    /// Gives a row a blob already stored without an owner (a file from
+    /// [`Ask::file_open`]), in one batch with `sql`, which writes the row
+    /// (usually naming `key` in a column). The row is `table`'s whose
+    /// primary key is `id`; deleting it deletes the blob. The pattern for
+    /// attaching a chosen file: [`Ask::file_open`], then this on its
+    /// [`Event::FileOpened`].
+    ///
+    /// ```
+    /// use rapidkoi::{params, Ask};
+    /// let attach = Ask::attach_blob("saved", "UPDATE notes SET photo = ? WHERE id = ?", params!["photo-3", 3],
+    ///     "notes", 3, "photo-3");
+    /// ```
+    pub fn attach_blob(msg: &str, sql: &str, params: Vec<Value>, table: &str, id: impl Into<Value>, key: &str) -> Ask {
+        Ask::sql_batch_steps(msg, alloc::vec![Step::blob_own(key, table, id), Step::sql(sql, params)])
+    }
     /// Asks Rapidkoi to change one of the person's choices (Rapidkoi's own Settings app only).
     pub fn set_preference(msg: &str, p: Preference) -> Ask {
         Ask::SetPreference(msg.into(), p)
@@ -269,6 +336,18 @@ impl From<BlobGet> for Ask {
 impl From<BlobList> for Ask {
     fn from(l: BlobList) -> Ask {
         Ask::BlobList(l)
+    }
+}
+
+impl From<FileOpen> for Ask {
+    fn from(o: FileOpen) -> Ask {
+        Ask::FileOpen(o)
+    }
+}
+
+impl From<FileSaveAs> for Ask {
+    fn from(s: FileSaveAs) -> Ask {
+        Ask::FileSaveAs(s)
     }
 }
 

@@ -14,6 +14,7 @@ use core::cell::RefCell;
 use minicbor::{Decoder, Encoder};
 
 use crate::blobs::{self, BlobAnswer, BlobInfo, Reader};
+use crate::files::{self, Kind, Pending};
 use crate::state::Link;
 use crate::{App, Ask, Message, Next};
 
@@ -109,6 +110,17 @@ pub enum Event<M = String> {
     /// Lines of a blob read with [`crate::Ask::blob_lines`]: those this
     /// piece finished, without their `\n`; `done` with the last of them.
     Lines { msg: String, lines: Vec<String>, done: bool },
+    /// A file the person chose ([`crate::Ask::file_open`]), now the blob
+    /// `key`: its name (`receipt.pdf`, never a path) and size, and, when
+    /// opened with `.edit()`, the handle to save back to it.
+    FileOpened { msg: String, key: String, name: String, size: u64, handle: Option<String> },
+    /// A [`crate::Ask::file_save`] done: the size written.
+    FileSaved { msg: String, size: u64 },
+    /// A [`crate::Ask::file_save_as`] done: the name the person chose, the
+    /// size written, and a handle to save to it again.
+    FileSavedAs { msg: String, name: String, size: u64, handle: String },
+    /// The person closed a file dialog without choosing: not an error.
+    FileCancelled { msg: String },
 }
 
 /// A fetch's answer value: `{status, headers, body}` or `{error}`.
@@ -238,18 +250,21 @@ fn load<A: App>(state: &[u8]) -> A {
 pub fn abi_handle<A: App>(state: &[u8], event: &[u8]) -> Vec<u8> {
     // Line readers between pieces (contract 9's `blob_lines`), kept in the state.
     let mut readers = blobs::readers_in(state);
+    // File asks waiting for their answers (contract 9's `file_open`, …), kept in the state too.
+    let mut pending = files::pending_in(state);
     match Event::<A::Msg>::decode(event) {
         // A fresh start has no state yet: begin from Default.
         // `kinds` goes with the fresh state: Rapidkoi sets a link's fields in it next.
-        Some(Event::Init) => result_with(&A::default().handle(Event::Init), &A::kinds(), Vec::new()),
+        Some(Event::Init) => result_with(&A::default().handle(Event::Init), &A::kinds(), Vec::new(), Vec::new()),
         Some(e) => {
+            let e = files::answer_of(e, &mut pending);
             let (e, follow) = lines_of(e, &mut readers);
             let mut next = load::<A>(state).handle(e);
             next.asks.extend(follow.map(Ask::from));
-            result_with(&next, &[], readers)
+            result_with(&next, &[], readers, pending)
         }
         // A kind of event this app doesn't know: nothing changes.
-        None => result_with(&Next::state(load::<A>(state)), &[], readers),
+        None => result_with(&Next::state(load::<A>(state)), &[], readers, pending),
     }
 }
 
@@ -283,18 +298,30 @@ fn lines_of<M>(e: Event<M>, readers: &mut Vec<Reader>) -> (Event<M>, Option<crat
 /// writing to a Vec never fails.
 #[cfg(test)]
 fn result<A: App>(next: &Next<A>, kinds: &[(String, &'static str)]) -> Vec<u8> {
-    result_with(next, kinds, Vec::new())
+    result_with(next, kinds, Vec::new(), Vec::new())
 }
 
-/// The result, with the line readers its asks start (and those still
-/// reading) kept in the state beside the app's fields.
-fn result_with<A: App>(next: &Next<A>, kinds: &[(String, &'static str)], mut readers: Vec<Reader>) -> Vec<u8> {
+/// The result, with the line readers and file asks its asks start (and
+/// those still waiting) kept in the state beside the app's fields.
+fn result_with<A: App>(
+    next: &Next<A>,
+    kinds: &[(String, &'static str)],
+    mut readers: Vec<Reader>,
+    mut pending: Vec<Pending>,
+) -> Vec<u8> {
     let kinds = &kinds[..kinds.len().min(MAX_KINDS)];
-    // Asking again under the same msg starts that reader over.
     for a in &next.asks {
-        if let Ask::BlobLines(msg, key) = a {
-            readers.retain(|r| r.msg != *msg);
-            readers.push(Reader::start(msg, key));
+        match a {
+            // Asking again under the same msg starts that reader over.
+            Ask::BlobLines(msg, key) => {
+                readers.retain(|r| r.msg != *msg);
+                readers.push(Reader::start(msg, key));
+            }
+            // Each file ask gets its own answer, so each waits.
+            Ask::FileOpen(o) => files::wait(&mut pending, &o.msg, Kind::Open),
+            Ask::FileSave(s) => files::wait(&mut pending, &s.msg, Kind::Save),
+            Ask::FileSaveAs(s) => files::wait(&mut pending, &s.msg, Kind::SaveAs),
+            _ => {}
         }
     }
     let mut e = Encoder::new(Vec::new());
@@ -302,7 +329,8 @@ fn result_with<A: App>(next: &Next<A>, kinds: &[(String, &'static str)], mut rea
     let _ = e.str("state");
     let mut app = Encoder::new(Vec::new());
     next.state.encode_state(&mut app);
-    e.writer_mut().extend_from_slice(&blobs::with_readers(app.into_writer(), &readers));
+    let fields: Vec<_> = [blobs::readers_field(&readers), files::pending_field(&pending)].into_iter().flatten().collect();
+    e.writer_mut().extend_from_slice(&blobs::with_fields(app.into_writer(), &fields));
     let asks = &next.asks;
     let _ = e.str("effects").and_then(|e| e.array(asks.len() as u64));
     for a in asks {
@@ -345,6 +373,9 @@ fn result_with<A: App>(next: &Next<A>, kinds: &[(String, &'static str)], mut rea
             Ask::BlobList(l) => l.write(&mut e),
             // Its first piece; the rest are asked as each arrives.
             Ask::BlobLines(msg, key) => Reader::start(msg, key).next().write(&mut e),
+            Ask::FileOpen(o) => o.write(&mut e),
+            Ask::FileSave(s) => s.write(&mut e),
+            Ask::FileSaveAs(s) => s.write(&mut e),
             Ask::SetPreference(msg, p) => {
                 let _ = e.map(4).and_then(|e| e.str("kind")).and_then(|e| e.str("set_preference"));
                 let _ = e.str("msg").and_then(|e| e.str(msg));
@@ -770,6 +801,130 @@ mod tests {
         // Asking again starts from 0 with no hash.
         let r = abi_handle::<Reading>(&state, &open());
         assert_eq!(get_of(&effects_of(&r)[0]), (0, None));
+    }
+
+    /// Records the file events it's given; a message sends one of each file ask.
+    #[derive(Default, crate::State)]
+    struct Files {
+        seen: Vec<String>,
+    }
+
+    impl App for Files {
+        type Msg = String;
+        fn handle(mut self, e: Event) -> Next<Self> {
+            let seen = match e {
+                Event::Message { .. } => {
+                    return Next::state(self)
+                        .ask(Ask::file_open("opened", "doc").edit())
+                        .ask(Ask::file_save("saved", "h1", "doc"))
+                        .ask(Ask::file_save_as("exported", "doc").name("notes.txt"));
+                }
+                Event::FileOpened { msg, key, name, size, handle } => alloc::format!("opened {msg} {key} {name} {size} {handle:?}"),
+                Event::FileSaved { msg, size } => alloc::format!("saved {msg} {size}"),
+                Event::FileSavedAs { msg, name, size, handle } => alloc::format!("saved as {msg} {name} {size} {handle}"),
+                Event::FileCancelled { msg } => alloc::format!("cancelled {msg}"),
+                Event::Failed { msg, error } => alloc::format!("failed {msg}: {error}"),
+                Event::Answer { msg, value } => alloc::format!("answer {msg} {value:?}"),
+                Event::Data { msg, .. } => alloc::format!("data {msg}"),
+                _ => return Next::state(self),
+            };
+            self.seen.push(seen);
+            Next::state(self)
+        }
+        fn view(&self) -> crate::View { crate::text("") }
+    }
+
+    fn press() -> Vec<u8> {
+        cbor(|e| {
+            e.map(2).unwrap().str("event").unwrap().str("on_message").unwrap().str("msg").unwrap().str("go").unwrap();
+        })
+    }
+
+    fn fail(msg: &str, error: &str) -> Vec<u8> {
+        cbor(|e| {
+            e.map(3).unwrap().str("event").unwrap().str("on_fail").unwrap().str("msg").unwrap().str(msg).unwrap();
+            e.str("value").unwrap().map(1).unwrap().str("error").unwrap().str(error).unwrap();
+        })
+    }
+
+    fn seen(state: &[u8]) -> Vec<String> {
+        <Files as crate::State>::decode_state(state).unwrap().seen
+    }
+
+    #[test]
+    fn file_asks_go_out_as_effects_and_wait_in_the_state() {
+        let r = abi_handle::<Files>(&[], &press());
+        let kinds: Vec<String> = effects_of(&r)
+            .iter()
+            .map(|fx| {
+                let mut d = Decoder::new(fx);
+                d.map().unwrap();
+                d.str().unwrap();
+                String::from(d.str().unwrap())
+            })
+            .collect();
+        assert_eq!(kinds, ["file_open", "file_save", "file_save_as"]);
+        let msgs: Vec<String> = files::pending_in(&state_of(&r)).into_iter().map(|p| p.msg).collect();
+        assert_eq!(msgs, ["opened", "saved", "exported"]);
+    }
+
+    #[test]
+    fn file_answers_decode_to_their_events() {
+        let state = state_of(&abi_handle::<Files>(&[], &press()));
+        let opened = answer("opened", |e| {
+            e.map(4).unwrap().str("key").unwrap().str("doc").unwrap().str("name").unwrap().str("notes.txt").unwrap();
+            e.str("size").unwrap().u64(12).unwrap().str("handle").unwrap().str("h1").unwrap();
+        });
+        let state = state_of(&abi_handle::<Files>(&state, &opened));
+        let saved = answer("saved", |e| {
+            e.map(1).unwrap().str("size").unwrap().u64(14).unwrap();
+        });
+        let state = state_of(&abi_handle::<Files>(&state, &saved));
+        let as_ = answer("exported", |e| {
+            e.map(3).unwrap().str("name").unwrap().str("copy.txt").unwrap().str("size").unwrap().u64(14).unwrap();
+            e.str("handle").unwrap().str("h2").unwrap();
+        });
+        let state = state_of(&abi_handle::<Files>(&state, &as_));
+        assert_eq!(seen(&state), [
+            "opened opened doc notes.txt 12 Some(\"h1\")",
+            "saved saved 14",
+            "saved as exported copy.txt 14 h2",
+        ]);
+        // All answered: nothing waits.
+        assert!(files::pending_in(&state).is_empty());
+        // Opened without `.edit()`: no handle.
+        let mut p = Vec::new();
+        files::wait(&mut p, "attached", Kind::Open);
+        let copy = answer("attached", |e| {
+            e.map(3).unwrap().str("key").unwrap().str("photo-3").unwrap().str("name").unwrap().str("beach.jpg").unwrap();
+            e.str("size").unwrap().u64(9).unwrap();
+        });
+        assert_eq!(
+            files::answer_of(Event::<String>::decode(&copy).unwrap(), &mut p),
+            Event::FileOpened { msg: "attached".into(), key: "photo-3".into(), name: "beach.jpg".into(), size: 9, handle: None }
+        );
+    }
+
+    #[test]
+    fn null_is_a_cancel_only_for_a_file_ask() {
+        let state = state_of(&abi_handle::<Files>(&[], &press()));
+        let state = state_of(&abi_handle::<Files>(&state, &answer("opened", |e| { e.null().unwrap(); })));
+        let state = state_of(&abi_handle::<Files>(&state, &fail("saved", "This file changed since it was opened")));
+        let absent = cbor(|e| {
+            e.map(2).unwrap().str("event").unwrap().str("on_answer").unwrap().str("msg").unwrap().str("exported").unwrap();
+        });
+        let state = state_of(&abi_handle::<Files>(&state, &absent));
+        // Nothing waits now: another null under the same msg is a plain answer.
+        assert!(files::pending_in(&state).is_empty());
+        let state = state_of(&abi_handle::<Files>(&state, &answer("opened", |e| { e.null().unwrap(); })));
+        let state = state_of(&abi_handle::<Files>(&state, &answer("me", |e| { e.null().unwrap(); })));
+        assert_eq!(seen(&state), [
+            "cancelled opened",
+            "failed saved: This file changed since it was opened",
+            "cancelled exported",
+            "answer opened None",
+            "answer me None",
+        ]);
     }
 
     #[test]
