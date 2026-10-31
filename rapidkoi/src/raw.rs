@@ -360,6 +360,12 @@ pub fn text<M>(s: &str) -> View<M> {
     View::new("text").prop("text", Val::Text(String::from(s)))
 }
 
+/// A text made of parts (contract 8): words, the person's name and times,
+/// put together by Rapidkoi while drawing ([`crate::Part`]). At most 64.
+pub fn text_of<M>(parts: impl IntoIterator<Item = crate::Part>) -> View<M> {
+    View::new("text").prop("parts", Val::Array(crate::parts::vals(parts)))
+}
+
 /// A typing box showing `value`; give it [`View::on_change`].
 pub fn field<M>(value: &str) -> View<M> {
     View::new("input").prop("value", Val::Text(String::from(value)))

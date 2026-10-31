@@ -1,4 +1,4 @@
-//! The calling convention of the contract (version 7): bytes in through `alloc`, bytes
+//! The calling convention of the contract (version 8): bytes in through `alloc`, bytes
 //! out as (pointer, length) packed in an i64, and the CBOR of the events
 //! and the `{state, effects, link, kinds}` result of `handle`.
 //!
@@ -17,7 +17,7 @@ use crate::state::Link;
 use crate::{App, Ask, Message, Next};
 
 #[doc(hidden)]
-pub const __CONTRACT_VERSION: i32 = 7;
+pub const __CONTRACT_VERSION: i32 = 8;
 
 struct Arena {
     live: Vec<Box<[u8]>>,
@@ -260,6 +260,7 @@ fn result<A: App>(next: &Next<A>, kinds: &[(String, &'static str)]) -> Vec<u8> {
             Ask::Session(msg) => plain(&mut e, "session", msg),
             Ask::RestoreSession(msg) => plain(&mut e, "restore_session", msg),
             Ask::Preferences(msg) => plain(&mut e, "preferences", msg),
+            Ask::Now(msg) => plain(&mut e, "now", msg),
             Ask::Sql(msg, sql, params) => {
                 let _ = e.map(4).and_then(|e| e.str("kind")).and_then(|e| e.str("sql"));
                 let _ = e.str("msg").and_then(|e| e.str(msg));
@@ -435,6 +436,40 @@ mod tests {
     }
 
     #[test]
+    fn now_is_asked_and_read_back() {
+        #[derive(Default, crate::State)]
+        struct S {
+            n: i64,
+        }
+        impl App for S {
+            type Msg = String;
+            fn handle(self, _: Event) -> Next<Self> { Next::state(self) }
+            fn view(&self) -> crate::View { crate::text("") }
+        }
+        let bytes = result(&Next::state(S::default()).ask(Ask::now("clock")), &[]);
+        let mut d = Decoder::new(&bytes);
+        d.map().unwrap();
+        d.str().unwrap();
+        d.skip().unwrap();
+        assert_eq!((d.str().unwrap(), d.array().unwrap()), ("effects", Some(1)));
+        assert_eq!(d.map().unwrap(), Some(2));
+        assert_eq!((d.str().unwrap(), d.str().unwrap()), ("kind", "now"));
+        assert_eq!((d.str().unwrap(), d.str().unwrap()), ("msg", "clock"));
+        // The answer: on_answer with an integer, an Event::Data that Now reads.
+        let mut e = Encoder::new(Vec::new());
+        e.map(3).unwrap().str("event").unwrap().str("on_answer").unwrap();
+        e.str("msg").unwrap().str("clock").unwrap();
+        e.str("value").unwrap().i64(1_793_450_000_000).unwrap();
+        match Event::<String>::decode(&e.into_writer()) {
+            Some(Event::Data { msg, cbor }) => {
+                assert_eq!(msg, "clock");
+                assert_eq!(crate::Now::read(&cbor), Some(1_793_450_000_000));
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
     fn asks_encode_as_effects() {
         // Decode what `result` wrote and read the effects back.
         #[derive(Default, crate::State)]
@@ -473,7 +508,7 @@ mod tests {
     }
 
     #[test]
-    fn the_init_result_carries_kinds_and_the_contract_is_7() {
+    fn the_init_result_carries_kinds_and_the_contract_is_8() {
         #[derive(Default, crate::State)]
         struct S {
             note: Option<u32>,
@@ -484,7 +519,7 @@ mod tests {
             fn handle(self, _: Event) -> Next<Self> { Next::state(self) }
             fn view(&self) -> crate::View { crate::text("") }
         }
-        assert_eq!(__CONTRACT_VERSION, 7);
+        assert_eq!(__CONTRACT_VERSION, 8);
         let bytes = result(&Next::state(S::default()), &<S as crate::State>::kinds());
         let mut d = Decoder::new(&bytes);
         assert_eq!(d.map().unwrap(), Some(3));

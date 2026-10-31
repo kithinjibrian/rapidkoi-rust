@@ -3,7 +3,7 @@
 //! An app is two functions over its state: [`App::handle`], which answers
 //! everything that happens (an [`Event`]: a fresh start, being opened, its
 //! own messages, Rapidkoi's answers), and [`App::view`], what's on screen.
-//! Rapidkoi holds the state between calls as named fields (contract 7), so
+//! Rapidkoi holds the state between calls as named fields (contract 8), so
 //! the state type derives [`State`] and `Default` (the start of a fresh
 //! run). [`export!`] writes the WebAssembly exports the shell calls.
 //!
@@ -34,9 +34,19 @@
 //!
 //! An app can ask Rapidkoi for its own key for the person
 //! ([`Ask::identity`]) or a sign-in signature ([`Ask::sign`]) from any
-//! event, usually [`Event::Opened`], with [`Next::ask`]; the reply is an [`Event::Answer`]. Text
-//! can hold [`FIRST_NAME`] and [`LAST_NAME`]: Rapidkoi fills in the
-//! person's name while drawing, so the app shows it without ever knowing it.
+//! event, usually [`Event::Opened`], with [`Next::ask`]; the reply is an [`Event::Answer`].
+//!
+//! A text can be made of parts ([`text_of`]): the person's name and moments
+//! in time, which Rapidkoi fills in while drawing, in the person's own zone,
+//! so the app shows them without ever learning them:
+//!
+//! ```ignore
+//! text_of(["Hello, ".into(), first_name(), "!".into()])
+//! text_of(["Edited ".into(), time(note.updated).relative()])   // "Edited 5 minutes ago"
+//! ```
+//!
+//! A time is milliseconds since 1970 UTC: what [`Ask::now`] answers
+//! (read with [`Now::read`]) and SQLite's `unixepoch() * 1000` gives.
 //!
 //! Pictures come from the app's bundle or its servers with [`image`]
 //! (`image("asset:trash.svg")`, `.fit(Fit::Cover)`, `.color(...)`); a box
@@ -58,6 +68,7 @@ mod home;
 #[path = "kinds.rs"]
 pub mod __kinds;
 mod message;
+mod parts;
 mod picture;
 mod prefs;
 mod signin;
@@ -75,6 +86,7 @@ pub use storage::Value;
 pub use signin::{Progress, SignIn};
 pub use rapidkoi_derive::{Message, State};
 pub use message::Message;
+pub use parts::{first_name, last_name, time, Now, Part, Show, Time, MAX_PARTS};
 pub use picture::{image, Fit};
 pub use state::{Field, Next, Simple, State};
 #[doc(hidden)]
@@ -85,14 +97,9 @@ pub use alloc::vec::Vec as __Vec;
 pub use alloc::string::String as __String;
 pub use raw::View;
 pub use style::Space;
-pub use view::{button, checkbox, column, input, row, spacer, tabs, text, text_area};
+pub use view::{button, checkbox, column, input, row, spacer, tabs, text, text_area, text_of};
 use alloc::string::String;
 use alloc::vec::Vec;
-
-/// Shown as the person's first name, filled in by Rapidkoi while drawing.
-pub const FIRST_NAME: &str = "{FIRST_NAME}";
-/// Shown as the person's last name, filled in by Rapidkoi while drawing.
-pub const LAST_NAME: &str = "{LAST_NAME}";
 
 /// Something to ask Rapidkoi for. The reply comes to [`App::handle`] as an event with `msg`.
 #[derive(Debug, Clone, PartialEq)]
@@ -117,6 +124,8 @@ pub enum Ask {
     RestoreSession(String),
     /// The person's choices: light or dark, more contrast, text size (any app).
     Preferences(String),
+    /// The time now in UTC, in milliseconds since 1970, rounded down to a second (any app).
+    Now(String),
     /// Change one of them (needs the built-in `change_settings`); not answered.
     SetPreference(String, Preference),
     /// One statement against the app's database: rows, or why not.
@@ -167,6 +176,10 @@ impl Ask {
     /// Asks for the person's choices: an [`Event::Data`] to read with [`Prefs::read`].
     pub fn preferences(msg: &str) -> Ask {
         Ask::Preferences(msg.into())
+    }
+    /// Asks for the time now: an [`Event::Data`] to read with [`Now::read`].
+    pub fn now(msg: &str) -> Ask {
+        Ask::Now(msg.into())
     }
     /// Runs one statement on the app's database: an [`Event::Rows`] or an
     /// [`Event::Failed`]. Values go in `params` (`params![…]`), one per `?`.
