@@ -1,4 +1,4 @@
-//! The calling convention of the contract (version 8): bytes in through `alloc`, bytes
+//! The calling convention of the contract (version 9): bytes in through `alloc`, bytes
 //! out as (pointer, length) packed in an i64, and the CBOR of the events
 //! and the `{state, effects, link, kinds}` result of `handle`.
 //!
@@ -13,11 +13,12 @@ use alloc::vec::Vec;
 use core::cell::RefCell;
 use minicbor::{Decoder, Encoder};
 
+use crate::blobs::{self, BlobAnswer, BlobInfo, Reader};
 use crate::state::Link;
 use crate::{App, Ask, Message, Next};
 
 #[doc(hidden)]
-pub const __CONTRACT_VERSION: i32 = 8;
+pub const __CONTRACT_VERSION: i32 = 9;
 
 struct Arena {
     live: Vec<Box<[u8]>>,
@@ -96,8 +97,18 @@ pub enum Event<M = String> {
     Failed { msg: String, error: String },
     /// A read of the app's database (contract 6): its columns' names and its rows, and whether there were more.
     Rows { msg: String, columns: Vec<String>, rows: Vec<Vec<crate::Value>>, cut: bool },
-    /// A write to the app's database: how many rows changed and the last rowid inserted.
+    /// A write to the app's database: how many rows its statements changed
+    /// (summed over them, contract 9) and the last rowid inserted.
     Done { msg: String, changes: i64, last_rowid: i64 },
+    /// A piece of a blob ([`crate::Ask::blob_get`], contract 9): its bytes,
+    /// where they start, the whole blob's size, and its hash (pass it with
+    /// later pieces: [`crate::BlobGet::hash`]).
+    Blob { msg: String, bytes: Vec<u8>, from: u64, size: u64, hash: Vec<u8> },
+    /// The app's blobs ([`crate::Ask::blob_list`]), in key order, and how many were left out.
+    Blobs { msg: String, blobs: Vec<BlobInfo>, cut: u64 },
+    /// Lines of a blob read with [`crate::Ask::blob_lines`]: those this
+    /// piece finished, without their `\n`; `done` with the last of them.
+    Lines { msg: String, lines: Vec<String>, done: bool },
 }
 
 /// A fetch's answer value: `{status, headers, body}` or `{error}`.
@@ -195,10 +206,14 @@ impl<M: Message> Event<M> {
                     Some(Event::Answer { msg: msg?, value: Some(Decoder::new(raw((a, b))).bytes().ok()?.to_vec()) })
                 }
                 Some((minicbor::data::Type::Null, _, _)) | None => Some(Event::Answer { msg: msg?, value: None }),
-                Some((_, a, b)) => match crate::storage::answered(raw((a, b))) {
+                Some((_, a, b)) => match blobs::blob_answer(raw((a, b))) {
+                    Some(BlobAnswer::Piece { bytes, from, size, hash }) => Some(Event::Blob { msg: msg?, bytes, from, size, hash }),
+                    Some(BlobAnswer::List { blobs, cut }) => Some(Event::Blobs { msg: msg?, blobs, cut }),
+                    None => match crate::storage::answered(raw((a, b))) {
                     Some(crate::storage::Answered::Rows { columns, rows, cut }) => Some(Event::Rows { msg: msg?, columns, rows, cut }),
                     Some(crate::storage::Answered::Done { changes, last_rowid }) => Some(Event::Done { msg: msg?, changes, last_rowid }),
                     None => Some(Event::Data { msg: msg?, cbor: raw((a, b)).to_vec() }),
+                    },
                 },
             },
             "on_response" | "on_fail" => {
@@ -221,25 +236,73 @@ fn load<A: App>(state: &[u8]) -> A {
 
 #[doc(hidden)]
 pub fn abi_handle<A: App>(state: &[u8], event: &[u8]) -> Vec<u8> {
+    // Line readers between pieces (contract 9's `blob_lines`), kept in the state.
+    let mut readers = blobs::readers_in(state);
     match Event::<A::Msg>::decode(event) {
         // A fresh start has no state yet: begin from Default.
         // `kinds` goes with the fresh state: Rapidkoi sets a link's fields in it next.
-        Some(Event::Init) => result(&A::default().handle(Event::Init), &A::kinds()),
-        Some(e) => result(&load::<A>(state).handle(e), &[]),
+        Some(Event::Init) => result_with(&A::default().handle(Event::Init), &A::kinds(), Vec::new()),
+        Some(e) => {
+            let (e, follow) = lines_of(e, &mut readers);
+            let mut next = load::<A>(state).handle(e);
+            next.asks.extend(follow.map(Ask::from));
+            result_with(&next, &[], readers)
+        }
         // A kind of event this app doesn't know: nothing changes.
-        None => result(&Next::state(load::<A>(state)), &[]),
+        None => result_with(&Next::state(load::<A>(state)), &[], readers),
+    }
+}
+
+/// A piece for a line reader becomes [`Event::Lines`], and the ask for its
+/// next piece; a failure ends its reader (the app starts over).
+fn lines_of<M>(e: Event<M>, readers: &mut Vec<Reader>) -> (Event<M>, Option<crate::BlobGet>) {
+    match e {
+        Event::Blob { msg, bytes, from, size, hash } => match readers.iter().position(|r| r.msg == msg) {
+            Some(i) => {
+                let (lines, done) = readers[i].take(&bytes, size, hash);
+                let follow = if done {
+                    readers.remove(i);
+                    None
+                } else {
+                    Some(readers[i].next())
+                };
+                (Event::Lines { msg, lines, done }, follow)
+            }
+            None => (Event::Blob { msg, bytes, from, size, hash }, None),
+        },
+        Event::Failed { msg, error } => {
+            readers.retain(|r| r.msg != msg);
+            (Event::Failed { msg, error }, None)
+        }
+        e => (e, None),
     }
 }
 
 /// `{"state": {…}, "effects": [...], "link": [...] or null, "kinds": {…}}`,
 /// `link` only when it changes, `kinds` only when given (the first 16);
 /// writing to a Vec never fails.
+#[cfg(test)]
 fn result<A: App>(next: &Next<A>, kinds: &[(String, &'static str)]) -> Vec<u8> {
+    result_with(next, kinds, Vec::new())
+}
+
+/// The result, with the line readers its asks start (and those still
+/// reading) kept in the state beside the app's fields.
+fn result_with<A: App>(next: &Next<A>, kinds: &[(String, &'static str)], mut readers: Vec<Reader>) -> Vec<u8> {
     let kinds = &kinds[..kinds.len().min(MAX_KINDS)];
+    // Asking again under the same msg starts that reader over.
+    for a in &next.asks {
+        if let Ask::BlobLines(msg, key) = a {
+            readers.retain(|r| r.msg != *msg);
+            readers.push(Reader::start(msg, key));
+        }
+    }
     let mut e = Encoder::new(Vec::new());
     let _ = e.map(2 + u64::from(next.link != Link::Keep) + u64::from(!kinds.is_empty()));
     let _ = e.str("state");
-    next.state.encode_state(&mut e);
+    let mut app = Encoder::new(Vec::new());
+    next.state.encode_state(&mut app);
+    e.writer_mut().extend_from_slice(&blobs::with_readers(app.into_writer(), &readers));
     let asks = &next.asks;
     let _ = e.str("effects").and_then(|e| e.array(asks.len() as u64));
     for a in asks {
@@ -274,14 +337,14 @@ fn result<A: App>(next: &Next<A>, kinds: &[(String, &'static str)]) -> Vec<u8> {
                 let _ = e.map(3).and_then(|e| e.str("kind")).and_then(|e| e.str("sql_batch"));
                 let _ = e.str("msg").and_then(|e| e.str(msg));
                 let _ = e.str("steps").and_then(|e| e.array(steps.len() as u64));
-                for (sql, params) in steps {
-                    let _ = e.map(2).and_then(|e| e.str("sql")).and_then(|e| e.str(sql));
-                    let _ = e.str("params").and_then(|e| e.array(params.len() as u64));
-                    for p in params {
-                        p.write(&mut e);
-                    }
+                for s in steps {
+                    s.write(&mut e);
                 }
             }
+            Ask::BlobGet(g) => g.write(&mut e),
+            Ask::BlobList(l) => l.write(&mut e),
+            // Its first piece; the rest are asked as each arrives.
+            Ask::BlobLines(msg, key) => Reader::start(msg, key).next().write(&mut e),
             Ask::SetPreference(msg, p) => {
                 let _ = e.map(4).and_then(|e| e.str("kind")).and_then(|e| e.str("set_preference"));
                 let _ = e.str("msg").and_then(|e| e.str(msg));
@@ -469,6 +532,246 @@ mod tests {
         }
     }
 
+    /// One effect of a result, as (key, value as CBOR) pairs read back.
+    fn effects_of(bytes: &[u8]) -> Vec<Vec<u8>> {
+        let mut d = Decoder::new(bytes);
+        let n = d.map().unwrap().unwrap();
+        let mut out = Vec::new();
+        for _ in 0..n {
+            if d.str().unwrap() == "effects" {
+                for _ in 0..d.array().unwrap().unwrap() {
+                    let a = d.position();
+                    d.skip().unwrap();
+                    out.push(bytes[a..d.position()].to_vec());
+                }
+            } else {
+                d.skip().unwrap();
+            }
+        }
+        out
+    }
+
+    /// The `state` of a result, as its own bytes.
+    fn state_of(bytes: &[u8]) -> Vec<u8> {
+        let mut d = Decoder::new(bytes);
+        let n = d.map().unwrap().unwrap();
+        for _ in 0..n {
+            let k = d.str().unwrap();
+            let a = d.position();
+            d.skip().unwrap();
+            if k == "state" {
+                return bytes[a..d.position()].to_vec();
+            }
+        }
+        panic!("no state")
+    }
+
+    fn cbor(f: impl FnOnce(&mut Encoder<Vec<u8>>)) -> Vec<u8> {
+        let mut e = Encoder::new(Vec::new());
+        f(&mut e);
+        e.into_writer()
+    }
+
+    #[test]
+    fn blob_steps_and_asks_encode() {
+        #[derive(Default, crate::State)]
+        struct S {
+            n: i64,
+        }
+        impl App for S {
+            type Msg = String;
+            fn handle(self, _: Event) -> Next<Self> { Next::state(self) }
+            fn view(&self) -> crate::View { crate::text("") }
+        }
+        use crate::Step;
+        let batch = Ask::sql_batch_steps("saved", vec![
+            Step::blob_set("photo-17", vec![1, 2]).owner("notes", 17),
+            Step::sql("INSERT INTO notes (id, photo) VALUES (?, ?)", crate::params![17, "photo-17"]),
+            Step::blob_delete("old"),
+        ]);
+        assert_eq!(
+            Ask::row_with_blob("saved", "INSERT INTO notes (id, photo) VALUES (?, ?)", crate::params![17, "photo-17"], "notes", 17, "photo-17", vec![1, 2]),
+            Ask::sql_batch_steps("saved", vec![
+                Step::blob_set("photo-17", vec![1, 2]).owner("notes", 17),
+                Step::sql("INSERT INTO notes (id, photo) VALUES (?, ?)", crate::params![17, "photo-17"]),
+            ])
+        );
+        let next = Next::state(S::default())
+            .ask(batch)
+            .ask(Ask::blob_get("g", "photo-17").from(4).len(10).hash(&[9; 32]))
+            .ask(Ask::blob_get("whole", "k"))
+            .ask(Ask::blob_list("l").prefix("photo-"))
+            .ask(Ask::blob_list("all"));
+        let fx = effects_of(&result(&next, &[]));
+        let expected = [
+            cbor(|e| {
+                e.map(3).unwrap().str("kind").unwrap().str("sql_batch").unwrap().str("msg").unwrap().str("saved").unwrap();
+                e.str("steps").unwrap().array(3).unwrap();
+                e.map(3).unwrap().str("blob_set").unwrap().str("photo-17").unwrap().str("bytes").unwrap().bytes(&[1, 2]).unwrap();
+                e.str("owner").unwrap().map(2).unwrap().str("table").unwrap().str("notes").unwrap().str("key").unwrap().i64(17).unwrap();
+                e.map(2).unwrap().str("sql").unwrap().str("INSERT INTO notes (id, photo) VALUES (?, ?)").unwrap();
+                e.str("params").unwrap().array(2).unwrap().i64(17).unwrap().str("photo-17").unwrap();
+                e.map(1).unwrap().str("blob_delete").unwrap().str("old").unwrap();
+            }),
+            cbor(|e| {
+                e.map(6).unwrap().str("kind").unwrap().str("blob_get").unwrap().str("msg").unwrap().str("g").unwrap();
+                e.str("key").unwrap().str("photo-17").unwrap().str("from").unwrap().u64(4).unwrap();
+                e.str("len").unwrap().u64(10).unwrap().str("hash").unwrap().bytes(&[9; 32]).unwrap();
+            }),
+            cbor(|e| {
+                e.map(3).unwrap().str("kind").unwrap().str("blob_get").unwrap().str("msg").unwrap().str("whole").unwrap();
+                e.str("key").unwrap().str("k").unwrap();
+            }),
+            cbor(|e| {
+                e.map(3).unwrap().str("kind").unwrap().str("blob_list").unwrap().str("msg").unwrap().str("l").unwrap();
+                e.str("prefix").unwrap().str("photo-").unwrap();
+            }),
+            cbor(|e| {
+                e.map(2).unwrap().str("kind").unwrap().str("blob_list").unwrap().str("msg").unwrap().str("all").unwrap();
+            }),
+        ];
+        assert_eq!(fx, expected);
+        // The statement-only form still writes plain steps.
+        let plain = Ask::sql_batch("s", vec![("DELETE FROM t".into(), vec![])]);
+        assert_eq!(plain, Ask::sql_batch_steps("s", vec![Step::sql("DELETE FROM t", vec![])]));
+    }
+
+    fn answer(msg: &str, value: impl FnOnce(&mut Encoder<Vec<u8>>)) -> Vec<u8> {
+        cbor(|e| {
+            e.map(3).unwrap().str("event").unwrap().str("on_answer").unwrap().str("msg").unwrap().str(msg).unwrap();
+            e.str("value").unwrap();
+            value(e);
+        })
+    }
+
+    fn piece(msg: &str, bytes: &[u8], from: u64, size: u64, hash: u8) -> Vec<u8> {
+        answer(msg, |e| {
+            e.map(4).unwrap().str("bytes").unwrap().bytes(bytes).unwrap().str("from").unwrap().u64(from).unwrap();
+            e.str("size").unwrap().u64(size).unwrap().str("hash").unwrap().bytes(&[hash; 32]).unwrap();
+        })
+    }
+
+    #[test]
+    fn blob_answers_decode() {
+        assert_eq!(
+            Event::<String>::decode(&piece("g", b"hi", 4, 6, 7)),
+            Some(Event::Blob { msg: "g".into(), bytes: b"hi".to_vec(), from: 4, size: 6, hash: vec![7; 32] })
+        );
+        let list = answer("l", |e| {
+            e.map(2).unwrap().str("blobs").unwrap().array(2).unwrap();
+            e.map(2).unwrap().str("key").unwrap().str("a").unwrap().str("size").unwrap().u64(3).unwrap();
+            e.map(3).unwrap().str("key").unwrap().str("photo-17").unwrap().str("size").unwrap().u64(9).unwrap();
+            e.str("owner").unwrap().map(2).unwrap().str("table").unwrap().str("notes").unwrap().str("key").unwrap().i64(17).unwrap();
+            e.str("cut").unwrap().u64(4).unwrap();
+        });
+        assert_eq!(
+            Event::<String>::decode(&list),
+            Some(Event::Blobs {
+                msg: "l".into(),
+                blobs: vec![
+                    crate::BlobInfo { key: "a".into(), size: 3, owner: None },
+                    crate::BlobInfo { key: "photo-17".into(), size: 9, owner: Some(("notes".into(), crate::Value::Integer(17))) },
+                ],
+                cut: 4,
+            })
+        );
+        // A batch answers as before.
+        let done = answer("s", |e| {
+            e.map(2).unwrap().str("changes").unwrap().i64(3).unwrap().str("last_rowid").unwrap().i64(17).unwrap();
+        });
+        assert_eq!(Event::<String>::decode(&done), Some(Event::Done { msg: "s".into(), changes: 3, last_rowid: 17 }));
+    }
+
+    #[derive(Default, crate::State)]
+    struct Reading {
+        lines: Vec<String>,
+        done: bool,
+        failed: bool,
+    }
+
+    impl App for Reading {
+        type Msg = String;
+        fn handle(mut self, e: Event) -> Next<Self> {
+            match e {
+                Event::Opened => Next::state(Reading::default()).ask(Ask::blob_lines("log", "log.csv")),
+                Event::Lines { msg, lines, done } if msg == "log" => {
+                    self.lines.extend(lines);
+                    self.done = done;
+                    Next::state(self)
+                }
+                Event::Failed { msg, .. } if msg == "log" => {
+                    self.failed = true;
+                    Next::state(self)
+                }
+                _ => Next::state(self),
+            }
+        }
+        fn view(&self) -> crate::View { crate::text("") }
+    }
+
+    fn open() -> Vec<u8> {
+        cbor(|e| {
+            e.map(1).unwrap().str("event").unwrap().str("on_open").unwrap();
+        })
+    }
+
+    fn get_of(effect: &[u8]) -> (u64, Option<Vec<u8>>) {
+        let mut d = Decoder::new(effect);
+        let (mut from, mut hash) = (None, None);
+        for _ in 0..d.map().unwrap().unwrap() {
+            match d.str().unwrap() {
+                "kind" => assert_eq!(d.str().unwrap(), "blob_get"),
+                "msg" => assert_eq!(d.str().unwrap(), "log"),
+                "key" => assert_eq!(d.str().unwrap(), "log.csv"),
+                "from" => from = Some(d.u64().unwrap()),
+                "hash" => hash = Some(d.bytes().unwrap().to_vec()),
+                other => panic!("{other}"),
+            }
+        }
+        (from.unwrap(), hash)
+    }
+
+    #[test]
+    fn blob_lines_reads_piece_by_piece() {
+        // "id,name\n1,Am" | "ina\n2,Juma": 22 bytes, the second line split, no newline at the end.
+        let r = abi_handle::<Reading>(&[], &open());
+        assert_eq!(get_of(&effects_of(&r)[0]), (0, None));
+        let r = abi_handle::<Reading>(&state_of(&r), &piece("log", b"id,name\n1,Am", 0, 22, 5));
+        let fx = effects_of(&r);
+        assert_eq!(fx.len(), 1);
+        assert_eq!(get_of(&fx[0]), (12, Some(vec![5; 32])));
+        let s = <Reading as crate::State>::decode_state(&state_of(&r)).unwrap();
+        assert_eq!((s.lines.as_slice(), s.done), (&["id,name".to_string()][..], false));
+        let r = abi_handle::<Reading>(&state_of(&r), &piece("log", b"ina\n2,Juma", 12, 22, 5));
+        assert!(effects_of(&r).is_empty());
+        let state = state_of(&r);
+        let s = <Reading as crate::State>::decode_state(&state).unwrap();
+        assert_eq!(s.lines, ["id,name", "1,Amina", "2,Juma"]);
+        assert!(s.done);
+        // Finished: no reader left in the state.
+        assert!(blobs::readers_in(&state).is_empty());
+    }
+
+    #[test]
+    fn blob_lines_fails_on_a_changed_blob_and_starts_over() {
+        let r = abi_handle::<Reading>(&[], &open());
+        let r = abi_handle::<Reading>(&state_of(&r), &piece("log", b"a\nb", 0, 10, 5));
+        assert_eq!(get_of(&effects_of(&r)[0]), (3, Some(vec![5; 32])));
+        // Rapidkoi saw another hash at the key.
+        let failed = cbor(|e| {
+            e.map(3).unwrap().str("event").unwrap().str("on_fail").unwrap().str("msg").unwrap().str("log").unwrap();
+            e.str("value").unwrap().map(1).unwrap().str("error").unwrap().str("This blob changed while it was being read").unwrap();
+        });
+        let r = abi_handle::<Reading>(&state_of(&r), &failed);
+        let state = state_of(&r);
+        assert!(<Reading as crate::State>::decode_state(&state).unwrap().failed);
+        assert!(blobs::readers_in(&state).is_empty());
+        assert!(effects_of(&r).is_empty());
+        // Asking again starts from 0 with no hash.
+        let r = abi_handle::<Reading>(&state, &open());
+        assert_eq!(get_of(&effects_of(&r)[0]), (0, None));
+    }
+
     #[test]
     fn asks_encode_as_effects() {
         // Decode what `result` wrote and read the effects back.
@@ -508,7 +811,7 @@ mod tests {
     }
 
     #[test]
-    fn the_init_result_carries_kinds_and_the_contract_is_8() {
+    fn the_init_result_carries_kinds_and_the_contract_is_9() {
         #[derive(Default, crate::State)]
         struct S {
             note: Option<u32>,
@@ -519,7 +822,7 @@ mod tests {
             fn handle(self, _: Event) -> Next<Self> { Next::state(self) }
             fn view(&self) -> crate::View { crate::text("") }
         }
-        assert_eq!(__CONTRACT_VERSION, 8);
+        assert_eq!(__CONTRACT_VERSION, 9);
         let bytes = result(&Next::state(S::default()), &<S as crate::State>::kinds());
         let mut d = Decoder::new(&bytes);
         assert_eq!(d.map().unwrap(), Some(3));

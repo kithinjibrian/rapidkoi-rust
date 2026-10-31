@@ -3,7 +3,7 @@
 //! An app is two functions over its state: [`App::handle`], which answers
 //! everything that happens (an [`Event`]: a fresh start, being opened, its
 //! own messages, Rapidkoi's answers), and [`App::view`], what's on screen.
-//! Rapidkoi holds the state between calls as named fields (contract 8), so
+//! Rapidkoi holds the state between calls as named fields (contract 9), so
 //! the state type derives [`State`] and `Default` (the start of a fresh
 //! run). [`export!`] writes the WebAssembly exports the shell calls.
 //!
@@ -52,6 +52,14 @@
 //! (`image("asset:trash.svg")`, `.fit(Fit::Cover)`, `.color(...)`); a box
 //! scrolls with `Layout::scroll()`: Rapidkoi never scrolls an app's page.
 //!
+//! Every app has its own SQLite database ([`Ask::sql`], [`Ask::sql_batch`])
+//! and, beside it, blobs (contract 9): large bytes under keys it names,
+//! stored with [`Step::blob_set`] in a batch, read with [`Ask::blob_get`]
+//! or line by line with [`Ask::blob_lines`]. Read a blob after its write's
+//! answer (asks run side by side), handle pieces as they arrive, and never
+//! name a table, index, trigger or view `rapidkoi_…`: those are Rapidkoi's.
+//! Changing a row's primary key drops the blobs it owns.
+//!
 //! An app can reach its own server and the servers it declares with
 //! [`Ask::fetch`]; the reply is an [`Event::Response`] or [`Event::Failed`].
 //! [`SignIn`] signs in to the app's own server with the person's key.
@@ -62,6 +70,7 @@ extern crate alloc;
 extern crate self as rapidkoi;
 
 mod abi;
+mod blobs;
 mod fetch;
 mod home;
 #[doc(hidden)]
@@ -78,6 +87,7 @@ mod storage;
 pub mod style;
 mod view;
 
+pub use blobs::{BlobGet, BlobInfo, BlobList, Step};
 pub use abi::{Event, __alloc, __finish, __input, __CONTRACT_VERSION};
 pub use fetch::{header, Request};
 pub use home::{Place, Session};
@@ -130,8 +140,14 @@ pub enum Ask {
     SetPreference(String, Preference),
     /// One statement against the app's database: rows, or why not.
     Sql(String, String, Vec<Value>),
-    /// Statements as one transaction: what changed, or why not (nothing kept).
-    SqlBatch(String, Vec<(String, Vec<Value>)>),
+    /// Steps as one transaction (statements, blobs stored or removed): what changed, or why not (nothing kept).
+    SqlBatch(String, Vec<Step>),
+    /// A blob's bytes, whole or a piece (contract 9).
+    BlobGet(BlobGet),
+    /// The app's blobs' keys (contract 9).
+    BlobList(BlobList),
+    /// A blob read line by line: [`Event::Lines`] until `done` (the SDK's own, over `blob_get`).
+    BlobLines(String, String),
 }
 
 impl Ask {
@@ -189,11 +205,68 @@ impl Ask {
     /// Runs statements as one transaction: an [`Event::Done`], or an
     /// [`Event::Failed`] with nothing kept.
     pub fn sql_batch(msg: &str, steps: Vec<(String, Vec<Value>)>) -> Ask {
+        Ask::SqlBatch(msg.into(), steps.into_iter().map(Step::from).collect())
+    }
+    /// Runs steps as one transaction (contract 9): statements, and blobs
+    /// stored ([`Step::blob_set`]) or removed ([`Step::blob_delete`]). An
+    /// [`Event::Done`], `changes` summed over the statements, or an
+    /// [`Event::Failed`] with nothing kept.
+    pub fn sql_batch_steps(msg: &str, steps: Vec<Step>) -> Ask {
         Ask::SqlBatch(msg.into(), steps)
+    }
+    /// Writes a row and its blob in one batch, the blob owned by the row:
+    /// deleting the row deletes it. `sql` writes the row (usually naming
+    /// `key` in a column); the row is `table`'s whose primary key is `id`.
+    ///
+    /// ```
+    /// use rapidkoi::{params, Ask};
+    /// let photo = vec![0xff, 0xd8];
+    /// let save = Ask::row_with_blob("saved", "INSERT INTO notes (id, photo) VALUES (?, ?)", params![17, "photo-17"],
+    ///     "notes", 17, "photo-17", photo);
+    /// ```
+    pub fn row_with_blob(
+        msg: &str,
+        sql: &str,
+        params: Vec<Value>,
+        table: &str,
+        id: impl Into<Value>,
+        key: &str,
+        bytes: impl Into<Vec<u8>>,
+    ) -> Ask {
+        Ask::sql_batch_steps(msg, alloc::vec![Step::blob_set(key, bytes).owner(table, id), Step::sql(sql, params)])
+    }
+    /// Reads `key`'s bytes, at most 4 MB from `.from(n)`: an [`Event::Blob`],
+    /// or an [`Event::Failed`] (no such key; changed since `.hash(h)`).
+    pub fn blob_get(msg: &str, key: &str) -> BlobGet {
+        BlobGet { msg: msg.into(), key: key.into(), from: None, len: None, hash: None }
+    }
+    /// Lists the app's blobs, in key order (`.prefix(p)` for some): an [`Event::Blobs`].
+    pub fn blob_list(msg: &str) -> BlobList {
+        BlobList { msg: msg.into(), prefix: None }
+    }
+    /// Reads `key` line by line, piece by piece, without holding it whole
+    /// (JSONL, CSV, a log): [`Event::Lines`] with each piece's finished
+    /// lines, the last with `done`. If the blob changes while it's read,
+    /// an [`Event::Failed`]: ask again to start over. Its place between
+    /// pieces is kept in the window's state (a field named `rapidkoi_lines`).
+    pub fn blob_lines(msg: &str, key: &str) -> Ask {
+        Ask::BlobLines(msg.into(), key.into())
     }
     /// Asks Rapidkoi to change one of the person's choices (Rapidkoi's own Settings app only).
     pub fn set_preference(msg: &str, p: Preference) -> Ask {
         Ask::SetPreference(msg.into(), p)
+    }
+}
+
+impl From<BlobGet> for Ask {
+    fn from(g: BlobGet) -> Ask {
+        Ask::BlobGet(g)
+    }
+}
+
+impl From<BlobList> for Ask {
+    fn from(l: BlobList) -> Ask {
+        Ask::BlobList(l)
     }
 }
 
