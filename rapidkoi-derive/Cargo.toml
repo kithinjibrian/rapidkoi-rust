@@ -2,7 +2,7 @@
 name = "rapidkoi-derive"
 version = "0.1.0"
 edition = "2021"
-description = "#[derive(State)] for Rapidkoi apps: a state of named fields, its link fields and their kinds (contract 7)"
+description = "#[derive(State)] for Rapidkoi apps: a state of named fields, its link fields and their kinds (contract 8)"
 license = "GPL-3.0-only"
 
 [lib]

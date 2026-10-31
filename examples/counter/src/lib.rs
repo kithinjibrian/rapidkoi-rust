@@ -3,7 +3,7 @@
 //! Build: `cargo build --release --target wasm32-unknown-unknown` in
 //! this repository's root, then open `target/wasm32-unknown-unknown/release/counter.wasm` in Rapidkoi.
 
-use rapidkoi::{button, column, input, row, text, App, Ask, Event, Message, Next, Space, State, View, FIRST_NAME};
+use rapidkoi::{button, column, input, row, text, App, Ask, Event, Message, Next, Space, State, View, first_name, text_of};
 
 #[derive(Default, State)]
 struct Counter {
@@ -56,7 +56,7 @@ impl App for Counter {
         // With no name typed here, Rapidkoi fills in the one you gave it: the
         // app shows it without ever learning it.
         let greeting = if self.name.is_empty() {
-            text(&format!("Hello, {}!", FIRST_NAME))
+            text_of(["Hello, ".into(), first_name(), "!".into()])
         } else {
             text(&format!("Hello, {}!", self.name))
         };
@@ -115,7 +115,7 @@ mod tests {
             text("Count: 0"),
             row([button("Add").primary().on_press(Msg::Add), button("Reset")]).spacing(Space::Sm),
             input("").placeholder("Your name").on_change(Msg::Name),
-            text("Hello, {FIRST_NAME}!"),
+            text_of(["Hello, ".into(), first_name(), "!".into()]),
             text("Not signed in").dim(),
         ]).spacing(Space::Md).screen_title("Counter"));
     }

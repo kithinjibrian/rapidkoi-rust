@@ -97,6 +97,19 @@ pub fn text<M>(s: &str) -> View<M> {
     crate::raw::text(s)
 }
 
+/// A line of text made of parts (contract 8): your words, the person's
+/// name ([`crate::first_name`]) and times ([`crate::time`]), filled in by
+/// Rapidkoi while drawing. The app never learns what's drawn.
+///
+/// ```
+/// use rapidkoi::{first_name, text_of, time, View};
+/// let hello: View = text_of(["Hello, ".into(), first_name(), "!".into()]);
+/// let edited: View = text_of(["Edited ".into(), time(1_793_450_000_000).relative()]).dim();
+/// ```
+pub fn text_of<M>(parts: impl IntoIterator<Item = crate::Part>) -> View<M> {
+    crate::raw::text_of(parts)
+}
+
 /// Children top to bottom, each at its own width unless it stretches.
 pub fn column<M>(children: impl IntoIterator<Item = View<M>>) -> View<M> {
     boxed().children(children)
@@ -262,6 +275,59 @@ mod tests {
         // Contract 7: Rapidkoi names the box by it.
         let k = keys(&input::<String>("").placeholder("Search").label("Search notes").on_change(s("search")));
         assert!(k.iter().any(|x| x == "label"));
+    }
+
+    #[test]
+    fn a_text_of_parts_writes_parts_not_text() {
+        // Contract 8: {"kind": "text", "props": {"parts": ["Hello, ", {"name": "first"}, "!", {"time": ms, "show": "relative"}]}}
+        let v = text_of::<String>(["Hello, ".into(), crate::first_name(), "!".into(), crate::time(1_793_450_000_000).relative()]);
+        let bytes = v.encode();
+        let mut d = Decoder::new(&bytes);
+        assert_eq!(d.map().unwrap(), Some(2));
+        assert_eq!((d.str().unwrap(), d.str().unwrap()), ("kind", "text"));
+        assert_eq!((d.str().unwrap(), d.map().unwrap()), ("props", Some(1)));
+        assert_eq!((d.str().unwrap(), d.array().unwrap()), ("parts", Some(4)));
+        assert_eq!(d.str().unwrap(), "Hello, ");
+        assert_eq!(d.map().unwrap(), Some(1));
+        assert_eq!((d.str().unwrap(), d.str().unwrap()), ("name", "first"));
+        assert_eq!(d.str().unwrap(), "!");
+        assert_eq!(d.map().unwrap(), Some(2));
+        assert_eq!((d.str().unwrap(), d.i64().unwrap()), ("time", 1_793_450_000_000));
+        assert_eq!((d.str().unwrap(), d.str().unwrap()), ("show", "relative"));
+        // A plain text stays a string.
+        assert_eq!(keys(&text::<String>("Hello, {FIRST_NAME}!")), ["text"]);
+    }
+
+    #[test]
+    fn every_way_to_show_a_time_has_its_name() {
+        let t = crate::time(0);
+        use crate::Show;
+        let shows = [
+            (t.time(), Show::Time, "time"),
+            (t.date(), Show::Date, "date"),
+            (t.date_time(), Show::DateTime, "date_time"),
+            (t.relative(), Show::Relative, "relative"),
+            (t.weekday(), Show::Weekday, "weekday"),
+        ];
+        for (part, show, name) in shows {
+            assert_eq!(part, crate::Part::Time(0, show));
+            let b = text_of::<String>([part]).encode();
+            assert!(b.windows(name.len() + 1).any(|w| w[0] == 0x60 + name.len() as u8 && &w[1..] == name.as_bytes()));
+        }
+        assert_eq!(crate::last_name(), crate::Part::LastName);
+        assert_eq!(crate::Part::from(String::from("x")), crate::Part::from("x"));
+    }
+
+    #[test]
+    #[should_panic(expected = "at most 64 parts")]
+    fn more_than_64_parts_is_caught() {
+        let _ = text_of::<String>((0..65).map(|_| crate::Part::from("x")));
+    }
+
+    #[test]
+    #[should_panic(expected = "years 1 to 9999")]
+    fn a_time_past_year_9999_is_caught() {
+        let _ = text_of::<String>([crate::time(253_402_300_800_000).date()]);
     }
 
     #[test]
