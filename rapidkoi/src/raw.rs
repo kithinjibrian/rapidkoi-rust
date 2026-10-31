@@ -218,6 +218,13 @@ impl<M> View<M> {
         self
     }
 
+    pub(crate) fn text_prop(&self, name: &str) -> Option<&str> {
+        self.props.iter().find_map(|(n, v)| match v {
+            Val::Text(s) if *n == name => Some(s.as_str()),
+            _ => None,
+        })
+    }
+
     pub(crate) fn has(&self, name: &str) -> bool {
         self.props.iter().any(|(n, _)| *n == name)
     }

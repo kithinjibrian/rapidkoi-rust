@@ -40,6 +40,11 @@ use minicbor::{data::Type, Decoder, Encoder};
 
 use crate::storage::Value;
 
+/// Whether `key` can name a blob: 1 to 256 bytes, no control characters.
+pub(crate) fn key_ok(key: &str) -> bool {
+    (1..=256).contains(&key.len()) && !key.bytes().any(|b| b < 32 || b == 127)
+}
+
 /// One step of [`crate::Ask::sql_batch_steps`]: a statement, or storing or
 /// removing a blob. All of a batch's steps commit together, or none do.
 #[derive(Debug, Clone, PartialEq)]

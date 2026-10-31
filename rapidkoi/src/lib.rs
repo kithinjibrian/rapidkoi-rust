@@ -48,7 +48,7 @@
 //! A time is milliseconds since 1970 UTC: what [`Ask::now`] answers
 //! (read with [`Now::read`]) and SQLite's `unixepoch() * 1000` gives.
 //!
-//! Pictures come from the app's bundle or its servers with [`image`]
+//! Pictures come from the app's bundle, its servers or its blobs with [`image`] and [`image_blob`]
 //! (`image("asset:trash.svg")`, `.fit(Fit::Cover)`, `.color(...)`); a box
 //! scrolls with `Layout::scroll()`: Rapidkoi never scrolls an app's page.
 //!
@@ -58,7 +58,9 @@
 //! or line by line with [`Ask::blob_lines`]. Read a blob after its write's
 //! answer (asks run side by side), handle pieces as they arrive, and never
 //! name a table, index, trigger or view `rapidkoi_…`: those are Rapidkoi's.
-//! Changing a row's primary key drops the blobs it owns.
+//! Changing a row's primary key drops the blobs it owns. A blob shows as a
+//! picture with [`image_blob`] and goes as a request's body with
+//! [`Request::body_blob`], its bytes never passing through the app.
 //!
 //! An app can reach its own server and the servers it declares with
 //! [`Ask::fetch`]; the reply is an [`Event::Response`] or [`Event::Failed`].
@@ -97,7 +99,7 @@ pub use signin::{Progress, SignIn};
 pub use rapidkoi_derive::{Message, State};
 pub use message::Message;
 pub use parts::{first_name, last_name, time, Now, Part, Show, Time, MAX_PARTS};
-pub use picture::{image, Fit};
+pub use picture::{image, image_blob, Fit};
 pub use state::{Field, Next, Simple, State};
 #[doc(hidden)]
 pub use minicbor as __minicbor;
