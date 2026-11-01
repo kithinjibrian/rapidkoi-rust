@@ -120,6 +120,31 @@ pub fn row<M>(children: impl IntoIterator<Item = View<M>>) -> View<M> {
     boxed().style([Layout::row()]).children(children)
 }
 
+/// Children on top of each other (contract 10): the first is the base, each
+/// later one drawn over it where its [`crate::style::Layout::place`] says.
+///
+/// ```
+/// use rapidkoi::style::{Layout, Place, Sizing};
+/// use rapidkoi::{image, layers, View};
+/// let face: View = layers([
+///     image("asset:face.png").style([Sizing::width(40), Sizing::height(40)]),
+///     image("asset:board.svg").style([Sizing::width(18), Sizing::height(18), Layout::place(Place::BottomEnd)]),
+/// ]);
+/// ```
+pub fn layers<M>(children: impl IntoIterator<Item = View<M>>) -> View<M> {
+    boxed().style([Layout::layers()]).children(children)
+}
+
+/// Children side by side, a new line when one is full (contract 10).
+pub fn wrap<M>(children: impl IntoIterator<Item = View<M>>) -> View<M> {
+    boxed().style([Layout::wrap()]).children(children)
+}
+
+/// Children side by side, as many as fit; the rest hidden from the end (contract 10).
+pub fn fit<M>(children: impl IntoIterator<Item = View<M>>) -> View<M> {
+    boxed().style([Layout::fit()]).children(children)
+}
+
 /// A button labelled `label`; give it [`View::on_press`] to make it work,
 /// or it's shown disabled.
 pub fn button<M>(label: &str) -> View<M> {

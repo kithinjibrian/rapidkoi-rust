@@ -198,6 +198,47 @@ impl Background {
     pub fn color(c: Color) -> Style {
         set("background", c.0)
     }
+
+    /// A gradient along `angle` degrees (0 points up, 90 right), drawn over
+    /// the background's colour (contract 10). 2 to 8 stops, each a colour and
+    /// its place from 0.0 to 1.0, in order; Rapidkoi stops the app otherwise.
+    ///
+    /// ```
+    /// use rapidkoi::style::{Background, Color};
+    /// let dusk = Background::linear(180, [(Color::rgb(30, 60, 114), 0.0), (Color::system("background"), 1.0)]);
+    /// ```
+    pub fn linear(angle: u16, stops: impl IntoIterator<Item = (Color, f64)>) -> Style {
+        gradient("linear", Val::Int((angle % 360) as i64), stops)
+    }
+
+    /// A gradient from an ellipse's centre out to its edge, drawn over the
+    /// background's colour (contract 10). `x` and `y` are its centre as
+    /// fractions of the box (0.0 the left or top, 1.0 the right or bottom;
+    /// −1 to 2, so a glow can start beyond an edge); `across` and `down` its
+    /// radii against the box's width and height (above 0, at most 4). Stops
+    /// as for [`Background::linear`].
+    ///
+    /// ```
+    /// use rapidkoi::style::{Background, Color};
+    /// // The app's colour washing in from the top-left corner.
+    /// let wash = Background::ellipse(0.0, 0.0, 1.1, 1.5, [
+    ///     (Color::rgba(20, 184, 166, 128), 0.0),
+    ///     (Color::rgba(20, 184, 166, 0), 0.9),
+    /// ]);
+    /// ```
+    pub fn ellipse(x: f64, y: f64, across: f64, down: f64, stops: impl IntoIterator<Item = (Color, f64)>) -> Style {
+        let shape = Val::Array(alloc::vec![Val::Float(x), Val::Float(y), Val::Float(across), Val::Float(down)]);
+        gradient("ellipse", shape, stops)
+    }
+}
+
+/// A `gradient` value: its shape under `kind`, and its stops.
+fn gradient(kind: &str, shape: Val, stops: impl IntoIterator<Item = (Color, f64)>) -> Style {
+    let stops = stops.into_iter().map(|(c, at)| Val::Array(alloc::vec![c.0, Val::Float(at)])).collect();
+    set(
+        "gradient",
+        Val::Map(alloc::vec![(String::from(kind), shape), (String::from("stops"), Val::Array(stops))]),
+    )
 }
 
 /// Text's own look.
@@ -363,6 +404,22 @@ impl Effects {
 }
 
 /// How a box lays out its children, and where it sits in its parent.
+/// Where a layer sits on its base: start and end follow the text's
+/// direction, as rows do; [`Place::Fill`] covers the whole base.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Place {
+    TopStart,
+    Top,
+    TopEnd,
+    Start,
+    Center,
+    End,
+    BottomStart,
+    Bottom,
+    BottomEnd,
+    Fill,
+}
+
 pub struct Layout;
 
 impl Layout {
@@ -382,6 +439,49 @@ impl Layout {
                 Align::Center => "center",
                 Align::End => "end",
                 Align::Stretch => "stretch",
+            }),
+        )
+    }
+    /// Children on top of each other (contract 10): the first is the base and
+    /// sizes the box; each later one is drawn over it, where its own
+    /// [`Layout::place`] says (covering the base without one).
+    pub fn layers() -> Style {
+        set("direction", word("layers"))
+    }
+    /// Children side by side, moving to a new line when one is full, so they
+    /// re-flow as the window changes (contract 10). The gap is the room
+    /// across and down; see [`Layout::equal`] and [`Layout::per_line`].
+    pub fn wrap() -> Style {
+        set("direction", word("wrap"))
+    }
+    /// Children side by side, as many as fit from the start; the rest are
+    /// hidden from the end (contract 10). It never makes the window wider.
+    pub fn fit() -> Style {
+        set("direction", word("fit"))
+    }
+    /// In a wrap: every child as wide as the widest, a tidy grid.
+    pub fn equal() -> Style {
+        set("equal", Val::Bool(true))
+    }
+    /// In a wrap: at most `n` children on a line (1 to 32).
+    pub fn per_line(n: u8) -> Style {
+        set("per_line", Val::Int(n.clamp(1, 32) as i64))
+    }
+    /// A layer's place on its base (in a [`Layout::layers`] box).
+    pub fn place(p: Place) -> Style {
+        set(
+            "place",
+            word(match p {
+                Place::TopStart => "top_start",
+                Place::Top => "top",
+                Place::TopEnd => "top_end",
+                Place::Start => "start",
+                Place::Center => "center",
+                Place::End => "end",
+                Place::BottomStart => "bottom_start",
+                Place::Bottom => "bottom",
+                Place::BottomEnd => "bottom_end",
+                Place::Fill => "fill",
             }),
         )
     }

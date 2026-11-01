@@ -381,7 +381,7 @@ pub fn field<M>(value: &str) -> View<M> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::style::{Background, Color, Spacing, Space, State, When};
+    use crate::style::{Background, Color, Layout, Place, Spacing, Space, State, When};
 
     fn hex(bytes: &[u8]) -> String {
         bytes.iter().map(|b| alloc::format!("{b:02x}")).collect()
@@ -413,6 +413,90 @@ mod tests {
         assert_eq!((d.str().unwrap(), d.str().unwrap()), ("padding", "sm"));
         assert_eq!((d.str().unwrap(), d.map().unwrap()), ("hover", Some(1)));
         assert_eq!((d.str().unwrap(), d.str().unwrap()), ("background", "#010203"));
+    }
+
+    fn t(s: &str) -> Val {
+        Val::Text(String::from(s))
+    }
+
+    fn stop(colour: &str, at: f64) -> Val {
+        Val::Array(alloc::vec![t(colour), Val::Float(at)])
+    }
+
+    #[test]
+    fn a_gradient_encodes_over_the_background() {
+        let linear = boxed::<String>()
+            .style([Background::linear(90, [(Color::system("accent"), 0.0), (Color::rgb(1, 2, 3), 1.0)])]);
+        assert_eq!(
+            linear.style,
+            alloc::vec![(
+                String::from("gradient"),
+                Val::Map(alloc::vec![
+                    (String::from("linear"), Val::Int(90)),
+                    (String::from("stops"), Val::Array(alloc::vec![stop("accent", 0.0), stop("#010203", 1.0)])),
+                ]),
+            )]
+        );
+        let ellipse = boxed::<String>()
+            .style([Background::ellipse(0.0, 0.0, 1.1, 1.5, [(Color::rgba(20, 184, 166, 128), 0.0), (Color::rgba(20, 184, 166, 0), 0.9)])]);
+        assert_eq!(
+            ellipse.style,
+            alloc::vec![(
+                String::from("gradient"),
+                Val::Map(alloc::vec![
+                    (
+                        String::from("ellipse"),
+                        Val::Array(alloc::vec![Val::Float(0.0), Val::Float(0.0), Val::Float(1.1), Val::Float(1.5)]),
+                    ),
+                    (String::from("stops"), Val::Array(alloc::vec![stop("#14b8a680", 0.0), stop("#14b8a600", 0.9)])),
+                ]),
+            )]
+        );
+    }
+
+    #[test]
+    fn the_new_directions_and_their_companions_encode() {
+        let v = boxed::<String>().style([Layout::wrap(), Layout::equal(), Layout::per_line(2)]);
+        assert_eq!(
+            v.style,
+            alloc::vec![
+                (String::from("direction"), t("wrap")),
+                (String::from("equal"), Val::Bool(true)),
+                (String::from("per_line"), Val::Int(2)),
+            ]
+        );
+        assert_eq!(boxed::<String>().style([Layout::layers()]).style, alloc::vec![(String::from("direction"), t("layers"))]);
+        assert_eq!(boxed::<String>().style([Layout::fit()]).style, alloc::vec![(String::from("direction"), t("fit"))]);
+        let places = [
+            (Place::TopStart, "top_start"),
+            (Place::Top, "top"),
+            (Place::TopEnd, "top_end"),
+            (Place::Start, "start"),
+            (Place::Center, "center"),
+            (Place::End, "end"),
+            (Place::BottomStart, "bottom_start"),
+            (Place::Bottom, "bottom"),
+            (Place::BottomEnd, "bottom_end"),
+            (Place::Fill, "fill"),
+        ];
+        for (p, word) in places {
+            assert_eq!(boxed::<String>().style([Layout::place(p)]).style, alloc::vec![(String::from("place"), t(word))]);
+        }
+        // A line holds at most 32: more is written as 32, as sizes are capped.
+        assert_eq!(boxed::<String>().style([Layout::per_line(40)]).style, alloc::vec![(String::from("per_line"), Val::Int(32))]);
+        assert_eq!(boxed::<String>().style([Layout::per_line(0)]).style, alloc::vec![(String::from("per_line"), Val::Int(1))]);
+    }
+
+    #[test]
+    fn the_builders_set_their_direction() {
+        for (v, word) in [
+            (crate::view::layers::<String>([text("a")]), "layers"),
+            (crate::view::wrap::<String>([text("a")]), "wrap"),
+            (crate::view::fit::<String>([text("a")]), "fit"),
+        ] {
+            assert_eq!(v.style, alloc::vec![(String::from("direction"), t(word))]);
+            assert_eq!(v.children.as_ref().map(|c| c.len()), Some(1));
+        }
     }
 
     #[test]
