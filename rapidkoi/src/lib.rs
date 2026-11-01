@@ -6,10 +6,12 @@
 //! Rapidkoi holds the state between calls as named fields (contract 9), so
 //! the state type derives [`State`] and `Default` (the start of a fresh
 //! run). [`export!`] writes the WebAssembly exports the shell calls. It
-//! speaks contract 10, the only one Rapidkoi runs: contract 9 with
+//! speaks contract 11, the only one Rapidkoi runs: contract 9 with
 //! gradients ([`style::Background::linear`], [`style::Background::ellipse`])
 //! and boxes whose children sit in layers, wrap onto new lines, or fit a
-//! line ([`layers`], [`wrap`], [`fit`]).
+//! line ([`layers`], [`wrap`], [`fit`]); and every app has an icon (`icon`
+//! in `rapidkoi.toml`), which Rapidkoi's own apps show by place
+//! ([`Place::icon`]).
 //!
 //! `handle` returns a [`Next`]: the new state, what to ask Rapidkoi for,
 //! and which fields go in the window's address. A link to the window

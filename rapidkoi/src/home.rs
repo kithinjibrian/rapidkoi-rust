@@ -1,6 +1,8 @@
 //! What the new tab reads (contract 3): the person's pins and where they
 //! left off, as Rapidkoi answers [`crate::Ask::pins`] and
-//! [`crate::Ask::left_off`]. Only an app built into Rapidkoi may ask.
+//! [`crate::Ask::left_off`], and their last session. Only an app built into
+//! Rapidkoi may ask. Every app has an icon (contract 11): a place names it as
+//! a source for [`crate::image`], which Rapidkoi draws; the app never holds it.
 
 use alloc::string::String;
 use alloc::vec::Vec;
@@ -13,8 +15,9 @@ pub struct Place {
     pub name: String,
     /// Where it lives: a site's host, or a local app's file name.
     pub place: String,
-    /// Its icon (PNG), when it has one.
-    pub icon: Option<Vec<u8>>,
+    /// Its icon, as a source to show: `image(&place.icon)` (contract 11).
+    /// Rapidkoi draws the app's own icon, or its initial when it has none.
+    pub icon: String,
     /// The screen it was showing, for where you left off.
     pub title: Option<String>,
 }
@@ -42,8 +45,8 @@ impl Place {
 pub struct Session {
     /// How many windows it had.
     pub count: u32,
-    /// The apps they were of, each once: a host or a file's name.
-    pub apps: Vec<String>,
+    /// The apps they were of, each once, in the order of their first window (contract 11).
+    pub apps: Vec<Place>,
 }
 
 impl Session {
@@ -58,7 +61,7 @@ impl Session {
                 "apps" => {
                     let k = d.array().ok()??;
                     for _ in 0..k {
-                        apps.push(String::from(d.str().ok()?));
+                        apps.push(read(&mut d)?);
                     }
                 }
                 _ => d.skip().ok()?,
@@ -75,12 +78,12 @@ fn read(d: &mut Decoder) -> Option<Place> {
         match d.str().ok()? {
             "name" => name = Some(String::from(d.str().ok()?)),
             "place" => place = Some(String::from(d.str().ok()?)),
-            "icon" => icon = Some(d.bytes().ok()?.to_vec()),
+            "icon" => icon = Some(String::from(d.str().ok()?)),
             "title" => title = Some(String::from(d.str().ok()?)),
             _ => d.skip().ok()?,
         }
     }
-    Some(Place { name: name?, place: place?, icon, title })
+    Some(Place { name: name?, place: place?, icon: icon?, title })
 }
 
 #[cfg(test)]
@@ -89,9 +92,10 @@ mod tests {
     use minicbor::Encoder;
 
     fn place(e: &mut Encoder<Vec<u8>>, name: &str, place: &str, title: Option<&str>) {
-        e.map(if title.is_some() { 3 } else { 2 }).unwrap();
+        e.map(if title.is_some() { 4 } else { 3 }).unwrap();
         e.str("name").unwrap().str(name).unwrap();
         e.str("place").unwrap().str(place).unwrap();
+        e.str("icon").unwrap().str(&alloc::format!("icon:{place}")).unwrap();
         if let Some(t) = title {
             e.str("title").unwrap().str(t).unwrap();
         }
@@ -106,6 +110,8 @@ mod tests {
         let pins = Place::list(&e.into_writer()).unwrap();
         assert_eq!(pins.iter().map(|p| p.name.as_str()).collect::<Vec<_>>(), ["Quote", "Counter"]);
         assert_eq!(pins[0].place, "quote.dafifi.net");
+        // Contract 11: the icon is a source to show, never its bytes.
+        assert_eq!(pins[0].icon, "icon:quote.dafifi.net");
         let mut e = Encoder::new(Vec::new());
         place(&mut e, "Quote", "quote.dafifi.net", Some("Quote of the day"));
         assert_eq!(Place::one(&e.into_writer()).unwrap().title.as_deref(), Some("Quote of the day"));
@@ -116,8 +122,15 @@ mod tests {
         let mut e = Encoder::new(Vec::new());
         e.map(2).unwrap();
         e.str("count").unwrap().u32(3).unwrap();
-        e.str("apps").unwrap().array(1).unwrap().str("quote.dafifi.net").unwrap();
-        assert_eq!(Session::read(&e.into_writer()), Some(Session { count: 3, apps: vec!["quote.dafifi.net".into()] }));
+        e.str("apps").unwrap().array(1).unwrap();
+        place(&mut e, "Quote", "quote.dafifi.net", None);
+        let quote = Place {
+            name: "Quote".into(),
+            place: "quote.dafifi.net".into(),
+            icon: "icon:quote.dafifi.net".into(),
+            title: None,
+        };
+        assert_eq!(Session::read(&e.into_writer()), Some(Session { count: 3, apps: vec![quote] }));
         assert_eq!(Session::read(&[0x80]), None);
     }
 
@@ -128,6 +141,10 @@ mod tests {
         // A place without its place.
         let mut e = Encoder::new(Vec::new());
         e.map(1).unwrap().str("name").unwrap().str("x").unwrap();
+        assert_eq!(Place::one(&e.into_writer()), None);
+        // Or without its icon, which Rapidkoi always names (contract 11).
+        let mut e = Encoder::new(Vec::new());
+        e.map(2).unwrap().str("name").unwrap().str("x").unwrap().str("place").unwrap().str("x.rkb").unwrap();
         assert_eq!(Place::one(&e.into_writer()), None);
     }
 }
