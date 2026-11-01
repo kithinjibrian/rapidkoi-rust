@@ -87,6 +87,9 @@ pub struct RecentPlace {
     /// When it was last open, in milliseconds since 1970: show it with
     /// [`crate::time`]`(seen).relative()`, so Rapidkoi keeps it current.
     pub seen: i64,
+    /// Its app's primary colour, `#rrggbb`: the one it names under
+    /// `[colors]`, else the one Rapidkoi gives it.
+    pub primary_color: String,
 }
 
 /// The person's recent places, newest first.
@@ -116,6 +119,7 @@ impl Recent {
 fn read_recent(d: &mut Decoder) -> Option<RecentPlace> {
     let n = d.map().ok()??;
     let (mut name, mut place, mut icon, mut address, mut title, mut seen) = (None, None, None, None, None, None);
+    let mut primary = None;
     for _ in 0..n {
         match d.str().ok()? {
             "name" => name = Some(String::from(d.str().ok()?)),
@@ -124,10 +128,20 @@ fn read_recent(d: &mut Decoder) -> Option<RecentPlace> {
             "address" => address = Some(String::from(d.str().ok()?)),
             "title" => title = Some(String::from(d.str().ok()?)),
             "seen" => seen = Some(d.i64().ok()?),
+            "colors" => {
+                let k = d.map().ok()??;
+                for _ in 0..k {
+                    match d.str().ok()? {
+                        "primary" => primary = Some(String::from(d.str().ok()?)),
+                        _ => d.skip().ok()?,
+                    }
+                }
+            }
             _ => d.skip().ok()?,
         }
     }
-    Some(RecentPlace { name: name?, place: place?, icon: icon?, address: address?, title, seen: seen? })
+    let primary_color = primary?;
+    Some(RecentPlace { name: name?, place: place?, icon: icon?, address: address?, title, seen: seen?, primary_color })
 }
 
 fn read(d: &mut Decoder) -> Option<Place> {
@@ -197,13 +211,14 @@ mod tests {
     fn recent_places_read_newest_first() {
         let mut e = Encoder::new(Vec::new());
         e.map(1).unwrap().str("places").unwrap().array(1).unwrap();
-        e.map(6).unwrap();
+        e.map(7).unwrap();
         e.str("name").unwrap().str("Notes").unwrap();
         e.str("place").unwrap().str("notes.dafifi.net").unwrap();
         e.str("icon").unwrap().str("icon:notes.dafifi.net").unwrap();
         e.str("address").unwrap().str("rapidkoi://notes.dafifi.net/@0.9.0?note=3").unwrap();
         e.str("title").unwrap().str("Shopping").unwrap();
         e.str("seen").unwrap().i64(1_793_450_000_000).unwrap();
+        e.str("colors").unwrap().map(1).unwrap().str("primary").unwrap().str("#14b8a6").unwrap();
         let places = Recent::read(&e.into_writer()).unwrap();
         assert_eq!(
             places,
@@ -214,6 +229,7 @@ mod tests {
                 address: "rapidkoi://notes.dafifi.net/@0.9.0?note=3".into(),
                 title: Some("Shopping".into()),
                 seen: 1_793_450_000_000,
+                primary_color: "#14b8a6".into(),
             }]
         );
         assert_eq!(Recent::read(&[0x80]), None);
