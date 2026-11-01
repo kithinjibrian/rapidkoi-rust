@@ -19,7 +19,7 @@ use crate::state::Link;
 use crate::{App, Ask, Message, Next};
 
 #[doc(hidden)]
-pub const __CONTRACT_VERSION: i32 = 9;
+pub const __CONTRACT_VERSION: i32 = 10;
 
 struct Arena {
     live: Vec<Box<[u8]>>,
@@ -977,7 +977,7 @@ mod tests {
             fn handle(self, _: Event) -> Next<Self> { Next::state(self) }
             fn view(&self) -> crate::View { crate::text("") }
         }
-        assert_eq!(__CONTRACT_VERSION, 9);
+        assert_eq!(__CONTRACT_VERSION, 10);
         let bytes = result(&Next::state(S::default()), &<S as crate::State>::kinds());
         let mut d = Decoder::new(&bytes);
         assert_eq!(d.map().unwrap(), Some(3));

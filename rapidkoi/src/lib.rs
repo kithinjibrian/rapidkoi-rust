@@ -5,7 +5,11 @@
 //! own messages, Rapidkoi's answers), and [`App::view`], what's on screen.
 //! Rapidkoi holds the state between calls as named fields (contract 9), so
 //! the state type derives [`State`] and `Default` (the start of a fresh
-//! run). [`export!`] writes the WebAssembly exports the shell calls.
+//! run). [`export!`] writes the WebAssembly exports the shell calls. It
+//! speaks contract 10, the only one Rapidkoi runs: contract 9 with
+//! gradients ([`style::Background::linear`], [`style::Background::ellipse`])
+//! and boxes whose children sit in layers, wrap onto new lines, or fit a
+//! line ([`layers`], [`wrap`], [`fit`]).
 //!
 //! `handle` returns a [`Next`]: the new state, what to ask Rapidkoi for,
 //! and which fields go in the window's address. A link to the window
@@ -124,7 +128,7 @@ pub use alloc::vec::Vec as __Vec;
 pub use alloc::string::String as __String;
 pub use raw::View;
 pub use style::Space;
-pub use view::{button, checkbox, column, input, row, spacer, tabs, text, text_area, text_of};
+pub use view::{button, checkbox, column, fit, input, layers, row, spacer, tabs, text, text_area, text_of, wrap};
 use alloc::string::String;
 use alloc::vec::Vec;
 
