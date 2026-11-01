@@ -113,7 +113,7 @@ pub use blobs::{BlobGet, BlobInfo, BlobList, Step};
 pub use abi::{Event, __alloc, __finish, __input, __CONTRACT_VERSION};
 pub use fetch::{header, Request};
 pub use files::{FileOpen, FileSave, FileSaveAs, MAX_ACCEPT};
-pub use home::{Place, Session};
+pub use home::{Place, Recent, RecentPlace, Session};
 pub use prefs::{Preference, Prefs};
 pub use storage::Value;
 pub use signin::{Progress, SignIn};
@@ -151,6 +151,10 @@ pub enum Ask {
     OpenPin(String, u32),
     /// Open where the person left off (needs the built-in `open_apps`); not answered.
     ContinueLeftOff(String),
+    /// The person's recent places, newest first (contract 11 addition; needs the built-in `read_left_off`).
+    Recent(String),
+    /// Open the person's recent place at this index (needs the built-in `open_apps`); not answered.
+    OpenRecent(String, u32),
     /// The person's last session, if there's one to restore (needs the built-in `restore_session`).
     Session(String),
     /// Restore the person's last session (needs the built-in `restore_session`); not answered.
@@ -208,6 +212,16 @@ impl Ask {
     /// Asks Rapidkoi to open where the person left off.
     pub fn continue_left_off(msg: &str) -> Ask {
         Ask::ContinueLeftOff(msg.into())
+    }
+    /// Asks for the person's recent places, newest first: an [`Event::Data`]
+    /// to read with [`Recent::read`].
+    pub fn recent(msg: &str) -> Ask {
+        Ask::Recent(msg.into())
+    }
+    /// Asks Rapidkoi to open recent place `index` as the places are now: a
+    /// fresh window at its address.
+    pub fn open_recent(msg: &str, index: u32) -> Ask {
+        Ask::OpenRecent(msg.into(), index)
     }
     /// Asks whether there's a last session to restore: an [`Event::Data`]
     /// to read with [`Session::read`], or an [`Event::Answer`] with nothing.

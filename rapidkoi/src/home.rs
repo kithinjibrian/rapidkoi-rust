@@ -71,6 +71,65 @@ impl Session {
     }
 }
 
+/// One of the person's recent places, as Rapidkoi answers [`crate::Ask::recent`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RecentPlace {
+    /// Its app's name.
+    pub name: String,
+    /// Where its app lives: a site's host, or a local app's file name.
+    pub place: String,
+    /// Its app's icon, as a source to show: `image(&p.icon)`.
+    pub icon: String,
+    /// Its address, as the address box shows it: a site's link with its fields, or a file's name.
+    pub address: String,
+    /// The screen's title it last had, if any.
+    pub title: Option<String>,
+    /// When it was last open, in milliseconds since 1970: show it with
+    /// [`crate::time`]`(seen).relative()`, so Rapidkoi keeps it current.
+    pub seen: i64,
+}
+
+/// The person's recent places, newest first.
+pub struct Recent;
+
+impl Recent {
+    /// Reads a recent answer; `None` if it isn't one.
+    pub fn read(cbor: &[u8]) -> Option<Vec<RecentPlace>> {
+        let mut d = Decoder::new(cbor);
+        let n = d.map().ok()??;
+        let mut out = Vec::new();
+        for _ in 0..n {
+            match d.str().ok()? {
+                "places" => {
+                    let k = d.array().ok()??;
+                    for _ in 0..k {
+                        out.push(read_recent(&mut d)?);
+                    }
+                }
+                _ => d.skip().ok()?,
+            }
+        }
+        Some(out)
+    }
+}
+
+fn read_recent(d: &mut Decoder) -> Option<RecentPlace> {
+    let n = d.map().ok()??;
+    let (mut name, mut place, mut icon, mut address, mut title, mut seen) = (None, None, None, None, None, None);
+    for _ in 0..n {
+        match d.str().ok()? {
+            "name" => name = Some(String::from(d.str().ok()?)),
+            "place" => place = Some(String::from(d.str().ok()?)),
+            "icon" => icon = Some(String::from(d.str().ok()?)),
+            "address" => address = Some(String::from(d.str().ok()?)),
+            "title" => title = Some(String::from(d.str().ok()?)),
+            "seen" => seen = Some(d.i64().ok()?),
+            _ => d.skip().ok()?,
+        }
+    }
+    Some(RecentPlace { name: name?, place: place?, icon: icon?, address: address?, title, seen: seen? })
+}
+
 fn read(d: &mut Decoder) -> Option<Place> {
     let n = d.map().ok()??;
     let (mut name, mut place, mut icon, mut title) = (None, None, None, None);
@@ -132,6 +191,32 @@ mod tests {
         };
         assert_eq!(Session::read(&e.into_writer()), Some(Session { count: 3, apps: vec![quote] }));
         assert_eq!(Session::read(&[0x80]), None);
+    }
+
+    #[test]
+    fn recent_places_read_newest_first() {
+        let mut e = Encoder::new(Vec::new());
+        e.map(1).unwrap().str("places").unwrap().array(1).unwrap();
+        e.map(6).unwrap();
+        e.str("name").unwrap().str("Notes").unwrap();
+        e.str("place").unwrap().str("notes.dafifi.net").unwrap();
+        e.str("icon").unwrap().str("icon:notes.dafifi.net").unwrap();
+        e.str("address").unwrap().str("rapidkoi://notes.dafifi.net/@0.9.0?note=3").unwrap();
+        e.str("title").unwrap().str("Shopping").unwrap();
+        e.str("seen").unwrap().i64(1_793_450_000_000).unwrap();
+        let places = Recent::read(&e.into_writer()).unwrap();
+        assert_eq!(
+            places,
+            vec![RecentPlace {
+                name: "Notes".into(),
+                place: "notes.dafifi.net".into(),
+                icon: "icon:notes.dafifi.net".into(),
+                address: "rapidkoi://notes.dafifi.net/@0.9.0?note=3".into(),
+                title: Some("Shopping".into()),
+                seen: 1_793_450_000_000,
+            }]
+        );
+        assert_eq!(Recent::read(&[0x80]), None);
     }
 
     #[test]
