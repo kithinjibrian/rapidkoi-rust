@@ -349,6 +349,7 @@ fn result_with<A: App>(
             Ask::LeftOff(msg) => plain(&mut e, "left_off", msg),
             Ask::ContinueLeftOff(msg) => plain(&mut e, "continue", msg),
             Ask::Session(msg) => plain(&mut e, "session", msg),
+            Ask::Recent(msg) => plain(&mut e, "recent", msg),
             Ask::RestoreSession(msg) => plain(&mut e, "restore_session", msg),
             Ask::Preferences(msg) => plain(&mut e, "preferences", msg),
             Ask::Now(msg) => plain(&mut e, "now", msg),
@@ -395,6 +396,11 @@ fn result_with<A: App>(
             }
             Ask::OpenPin(msg, index) => {
                 let _ = e.map(3).and_then(|e| e.str("kind")).and_then(|e| e.str("open_pin"));
+                let _ = e.str("msg").and_then(|e| e.str(msg));
+                let _ = e.str("index").and_then(|e| e.u32(*index));
+            }
+            Ask::OpenRecent(msg, index) => {
+                let _ = e.map(3).and_then(|e| e.str("kind")).and_then(|e| e.str("open_recent"));
                 let _ = e.str("msg").and_then(|e| e.str(msg));
                 let _ = e.str("index").and_then(|e| e.u32(*index));
             }
@@ -527,6 +533,34 @@ mod tests {
         assert_eq!(d.map().unwrap(), Some(2));
         assert_eq!((d.str().unwrap(), d.str().unwrap()), ("kind", "continue"));
         assert_eq!((d.str().unwrap(), d.str().unwrap()), ("msg", "c"));
+    }
+
+    #[test]
+    fn recent_places_are_asked_for_and_opened_by_index() {
+        #[derive(Default, crate::State)]
+        struct S {
+            n: u32,
+        }
+        impl App for S {
+            type Msg = String;
+            fn handle(self, _: Event) -> Next<Self> { Next::state(self) }
+            fn view(&self) -> crate::View { crate::text("") }
+        }
+        let asks = [Ask::recent("r"), Ask::open_recent("o", 3)];
+        let bytes = result(&asks.iter().cloned().fold(Next::state(S { n: 1 }), Next::ask), &[]);
+        let mut d = Decoder::new(&bytes);
+        d.map().unwrap();
+        d.str().unwrap();
+        d.skip().unwrap();
+        d.str().unwrap();
+        assert_eq!(d.array().unwrap(), Some(2));
+        assert_eq!(d.map().unwrap(), Some(2));
+        assert_eq!((d.str().unwrap(), d.str().unwrap()), ("kind", "recent"));
+        assert_eq!((d.str().unwrap(), d.str().unwrap()), ("msg", "r"));
+        assert_eq!(d.map().unwrap(), Some(3));
+        assert_eq!((d.str().unwrap(), d.str().unwrap()), ("kind", "open_recent"));
+        assert_eq!((d.str().unwrap(), d.str().unwrap()), ("msg", "o"));
+        assert_eq!((d.str().unwrap(), d.u32().unwrap()), ("index", 3));
     }
 
     #[test]
