@@ -417,6 +417,23 @@ fn result_with<A: App>(
                 let _ = e.str("msg").and_then(|e| e.str(msg));
                 let _ = e.str("index").and_then(|e| e.u32(*index));
             }
+            Ask::Apps(msg) => plain(&mut e, "apps", msg),
+            Ask::OpenApp(msg, index)
+            | Ask::PinApp(msg, index)
+            | Ask::UnpinApp(msg, index)
+            | Ask::AppPermissions(msg, index)
+            | Ask::ForgetApp(msg, index) => {
+                let kind = match a {
+                    Ask::OpenApp(..) => "open_app",
+                    Ask::PinApp(..) => "pin_app",
+                    Ask::UnpinApp(..) => "unpin_app",
+                    Ask::AppPermissions(..) => "app_permissions",
+                    _ => "forget_app",
+                };
+                let _ = e.map(3).and_then(|e| e.str("kind")).and_then(|e| e.str(kind));
+                let _ = e.str("msg").and_then(|e| e.str(msg));
+                let _ = e.str("index").and_then(|e| e.u32(*index));
+            }
         }
     }
     match &next.link {
@@ -546,6 +563,45 @@ mod tests {
         assert_eq!(d.map().unwrap(), Some(2));
         assert_eq!((d.str().unwrap(), d.str().unwrap()), ("kind", "continue"));
         assert_eq!((d.str().unwrap(), d.str().unwrap()), ("msg", "c"));
+    }
+
+    #[test]
+    fn all_apps_asks_are_written_with_their_index() {
+        #[derive(Default, crate::State)]
+        struct S {
+            n: u32,
+        }
+        impl App for S {
+            type Msg = String;
+            fn handle(self, _: Event) -> Next<Self> { Next::state(self) }
+            fn view(&self) -> crate::View { crate::text("") }
+        }
+        let asks = [
+            Ask::apps("a"),
+            Ask::open_app("o", 1),
+            Ask::pin_app("p", 2),
+            Ask::unpin_app("u", 3),
+            Ask::app_permissions("s", 4),
+            Ask::forget_app("f", 5),
+        ];
+        let bytes = result(&asks.iter().cloned().fold(Next::state(S { n: 1 }), Next::ask), &[]);
+        let mut d = Decoder::new(&bytes);
+        d.map().unwrap();
+        d.str().unwrap();
+        d.skip().unwrap();
+        d.str().unwrap();
+        assert_eq!(d.array().unwrap(), Some(6));
+        assert_eq!(d.map().unwrap(), Some(2));
+        assert_eq!((d.str().unwrap(), d.str().unwrap()), ("kind", "apps"));
+        assert_eq!((d.str().unwrap(), d.str().unwrap()), ("msg", "a"));
+        let rest =
+            [("open_app", "o", 1), ("pin_app", "p", 2), ("unpin_app", "u", 3), ("app_permissions", "s", 4), ("forget_app", "f", 5)];
+        for (kind, msg, index) in rest {
+            assert_eq!(d.map().unwrap(), Some(3));
+            assert_eq!((d.str().unwrap(), d.str().unwrap()), ("kind", kind));
+            assert_eq!((d.str().unwrap(), d.str().unwrap()), ("msg", msg));
+            assert_eq!((d.str().unwrap(), d.u32().unwrap()), ("index", index));
+        }
     }
 
     #[test]
