@@ -91,6 +91,7 @@ extern crate alloc;
 extern crate self as rapidkoi;
 
 mod abi;
+mod apps;
 mod blobs;
 mod fetch;
 pub mod files;
@@ -110,6 +111,7 @@ mod storage;
 pub mod style;
 mod view;
 
+pub use apps::{Apps, ListedApp};
 pub use blobs::{BlobGet, BlobInfo, BlobList, Step};
 pub use abi::{Event, __alloc, __finish, __input, __CONTRACT_VERSION};
 pub use fetch::{header, Request};
@@ -193,6 +195,18 @@ pub enum Ask {
     OpenNotification(String, u32),
     /// Remove the person's notification at this index (needs the built-in `read_notifications`); not answered.
     DismissNotification(String, u32),
+    /// The person's apps, A–Z (needs the built-in `read_apps`).
+    Apps(String),
+    /// Open the person's app at this index (needs the built-in `open_apps`); not answered.
+    OpenApp(String, u32),
+    /// Pin the person's app at this index to the dock (needs the built-in `manage_pins`); not answered.
+    PinApp(String, u32),
+    /// Unpin the person's app at this index (needs the built-in `manage_pins`); not answered.
+    UnpinApp(String, u32),
+    /// Open the person's app at this index with Rapidkoi's panel on its permissions (needs `open_apps`); not answered.
+    AppPermissions(String, u32),
+    /// Open the person's app at this index with Rapidkoi's "Forget this app?" (needs `open_apps`); not answered.
+    ForgetApp(String, u32),
 }
 
 impl Ask {
@@ -269,6 +283,30 @@ impl Ask {
     /// Asks Rapidkoi to remove notification `index` as they're listed now.
     pub fn dismiss_notification(msg: &str, index: u32) -> Ask {
         Ask::DismissNotification(msg.into(), index)
+    }
+    /// Asks for the person's apps, A–Z: an [`Event::Data`] to read with [`Apps::read`].
+    pub fn apps(msg: &str) -> Ask {
+        Ask::Apps(msg.into())
+    }
+    /// Asks Rapidkoi to open app `index` as they're listed now.
+    pub fn open_app(msg: &str, index: u32) -> Ask {
+        Ask::OpenApp(msg.into(), index)
+    }
+    /// Asks Rapidkoi to pin app `index` to the dock, at its end.
+    pub fn pin_app(msg: &str, index: u32) -> Ask {
+        Ask::PinApp(msg.into(), index)
+    }
+    /// Asks Rapidkoi to unpin app `index`.
+    pub fn unpin_app(msg: &str, index: u32) -> Ask {
+        Ask::UnpinApp(msg.into(), index)
+    }
+    /// Asks Rapidkoi to open app `index` with its panel on the app's permissions: the person changes them there.
+    pub fn app_permissions(msg: &str, index: u32) -> Ask {
+        Ask::AppPermissions(msg.into(), index)
+    }
+    /// Asks Rapidkoi to open app `index` with its own "Forget this app?": the person decides there.
+    pub fn forget_app(msg: &str, index: u32) -> Ask {
+        Ask::ForgetApp(msg.into(), index)
     }
     /// Asks for the time now: an [`Event::Data`] to read with [`Now::read`].
     pub fn now(msg: &str) -> Ask {
