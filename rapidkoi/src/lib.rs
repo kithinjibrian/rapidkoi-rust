@@ -99,6 +99,7 @@ mod home;
 #[path = "kinds.rs"]
 pub mod __kinds;
 mod message;
+mod notify;
 mod parts;
 mod picture;
 mod prefs;
@@ -119,6 +120,7 @@ pub use storage::Value;
 pub use signin::{Progress, SignIn};
 pub use rapidkoi_derive::{Message, State};
 pub use message::Message;
+pub use notify::{FieldValue, Notification, Notifications, Notify};
 pub use parts::{first_name, last_name, time, Now, Part, Show, Time, MAX_PARTS};
 pub use picture::{image, image_blob, Fit};
 pub use state::{Field, Next, Simple, State};
@@ -181,6 +183,16 @@ pub enum Ask {
     FileSave(FileSave),
     /// A blob's bytes saved to a file the person chooses.
     FileSaveAs(FileSaveAs),
+    /// A notification (contract 11 addition; needs `notifications`, asked of the person first); not answered.
+    Notify(Notify),
+    /// Take back this app's notification with this key; not answered.
+    Withdraw(String, String),
+    /// The person's notifications (needs the built-in `read_notifications`).
+    Notifications(String),
+    /// Open the person's notification at this index (needs the built-in `read_notifications`); not answered.
+    OpenNotification(String, u32),
+    /// Remove the person's notification at this index (needs the built-in `read_notifications`); not answered.
+    DismissNotification(String, u32),
 }
 
 impl Ask {
@@ -235,6 +247,28 @@ impl Ask {
     /// Asks for the person's choices: an [`Event::Data`] to read with [`Prefs::read`].
     pub fn preferences(msg: &str) -> Ask {
         Ask::Preferences(msg.into())
+    }
+    /// Sends the person a notification, while the app runs (contract 11
+    /// addition; declare `notifications`). Rapidkoi asks them first, the
+    /// first time; blocked, it's dropped and the app runs on.
+    pub fn notify(n: Notify) -> Ask {
+        Ask::Notify(n)
+    }
+    /// Takes back this app's notification with `key`, once it's no longer true.
+    pub fn withdraw(msg: &str, key: &str) -> Ask {
+        Ask::Withdraw(msg.into(), key.into())
+    }
+    /// Asks for the person's notifications: an [`Event::Data`] to read with [`Notifications::read`].
+    pub fn notifications(msg: &str) -> Ask {
+        Ask::Notifications(msg.into())
+    }
+    /// Asks Rapidkoi to open notification `index` as they're listed now: its place, and it's read.
+    pub fn open_notification(msg: &str, index: u32) -> Ask {
+        Ask::OpenNotification(msg.into(), index)
+    }
+    /// Asks Rapidkoi to remove notification `index` as they're listed now.
+    pub fn dismiss_notification(msg: &str, index: u32) -> Ask {
+        Ask::DismissNotification(msg.into(), index)
     }
     /// Asks for the time now: an [`Event::Data`] to read with [`Now::read`].
     pub fn now(msg: &str) -> Ask {

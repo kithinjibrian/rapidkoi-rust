@@ -404,6 +404,19 @@ fn result_with<A: App>(
                 let _ = e.str("msg").and_then(|e| e.str(msg));
                 let _ = e.str("index").and_then(|e| e.u32(*index));
             }
+            Ask::Notify(n) => n.write(&mut e),
+            Ask::Withdraw(msg, key) => {
+                let _ = e.map(3).and_then(|e| e.str("kind")).and_then(|e| e.str("withdraw"));
+                let _ = e.str("msg").and_then(|e| e.str(msg));
+                let _ = e.str("key").and_then(|e| e.str(key));
+            }
+            Ask::Notifications(msg) => plain(&mut e, "notifications", msg),
+            Ask::OpenNotification(msg, index) | Ask::DismissNotification(msg, index) => {
+                let kind = if matches!(a, Ask::OpenNotification(..)) { "open_notification" } else { "dismiss_notification" };
+                let _ = e.map(3).and_then(|e| e.str("kind")).and_then(|e| e.str(kind));
+                let _ = e.str("msg").and_then(|e| e.str(msg));
+                let _ = e.str("index").and_then(|e| e.u32(*index));
+            }
         }
     }
     match &next.link {

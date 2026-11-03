@@ -3,7 +3,7 @@
 //! Build: `cargo build --release --target wasm32-unknown-unknown` in
 //! this repository's root, then open `target/wasm32-unknown-unknown/release/counter.wasm` in Rapidkoi.
 
-use rapidkoi::{button, column, input, row, text, App, Ask, Event, Message, Next, Space, State, View, first_name, text_of};
+use rapidkoi::{button, column, input, row, text, App, Ask, Event, Message, Next, Notify, Space, State, View, first_name, text_of};
 
 #[derive(Default, State)]
 struct Counter {
@@ -21,6 +21,14 @@ enum Msg {
     Reset,
     /// The name box changed: the text comes as the event's `value`.
     Name,
+    /// Send a notification of the count (packed with `--permission notifications`).
+    Notify,
+}
+
+/// The notification of `count`: opening it opens the counter there. One at
+/// a time: its key replaces the last.
+fn notice(count: i64) -> Ask {
+    Ask::notify(Notify::new("notified", &format!("Your count is {}", count)).field("count", count).key("count"))
 }
 
 /// "User " and a key's first four hex digits: the label Rapidkoi shows too.
@@ -46,6 +54,10 @@ impl App for Counter {
                 Msg::Add => Next::state(Counter { count: self.count + 1, ..self }).link(Counter::count),
                 Msg::Reset => Next::state(Counter { count: 0, ..self }).link(Counter::count),
                 Msg::Name => Next::state(Counter { name: value.unwrap_or_default(), ..self }),
+                Msg::Notify => {
+                    let count = self.count;
+                    Next::state(self).ask(notice(count))
+                }
             },
             // Events this version doesn't use.
             _ => Next::state(self),
@@ -66,6 +78,7 @@ impl App for Counter {
             row([
                 button("Add").primary().on_press(Msg::Add),
                 button("Reset").on_press_if(self.count != 0, Msg::Reset),
+                button("Notify me").on_press(Msg::Notify),
             ])
             .spacing(Space::Sm),
             input(&self.name).placeholder("Your name").on_change(Msg::Name),
@@ -113,11 +126,18 @@ mod tests {
         assert_eq!(v, column([
             text("Counter").title(),
             text("Count: 0"),
-            row([button("Add").primary().on_press(Msg::Add), button("Reset")]).spacing(Space::Sm),
+            row([button("Add").primary().on_press(Msg::Add), button("Reset"), button("Notify me").on_press(Msg::Notify)])
+                .spacing(Space::Sm),
             input("").placeholder("Your name").on_change(Msg::Name),
             text_of(["Hello, ".into(), first_name(), "!".into()]),
             text("Not signed in").dim(),
         ]).spacing(Space::Md).screen_title("Counter"));
+    }
+
+    #[test]
+    fn notify_me_sends_the_count_and_its_place() {
+        let c = message(Counter::default(), Msg::Add, None).into_state();
+        assert_eq!(message(c, Msg::Notify, None).asks(), &[notice(1)]);
     }
 
     #[test]
