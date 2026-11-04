@@ -3,7 +3,7 @@
 //! Build: `cargo build --release --target wasm32-unknown-unknown` in
 //! this repository's root, then open `target/wasm32-unknown-unknown/release/counter.wasm` in Rapidkoi.
 
-use rapidkoi::{button, column, input, row, text, App, Ask, Event, Message, Next, Notify, Space, State, View, first_name, text_of};
+use rapidkoi::{button, column, input, row, text, widget, App, Ask, Event, Message, Next, Notify, Space, State, View, first_name, text_of};
 
 #[derive(Default, State)]
 struct Counter {
@@ -31,6 +31,12 @@ fn notice(count: i64) -> Ask {
     Ask::notify(Notify::new("notified", &format!("Your count is {}", count)).field("count", count).key("count"))
 }
 
+/// The count's widget (`count` in rapidkoi.toml): on the new tab only if the
+/// person puts it there; clicking it opens the counter at this count.
+fn card(count: i64) -> Ask {
+    Ask::widget(widget::Widget::new("count", widget::number::<Msg>(&format!("{}", count), "Your count")).field("count", count))
+}
+
 /// "User " and a key's first four hex digits: the label Rapidkoi shows too.
 fn label(key: &[u8]) -> String {
     let mut s = String::from("User ");
@@ -48,11 +54,18 @@ impl App for Counter {
             // A fresh start (Default is the start): the count goes in the address.
             Event::Init => Next::state(self).link(Counter::count),
             // Every open, fresh, resumed or from a link: ask Rapidkoi who you are to this app.
-            Event::Opened => Next::state(self).ask(Ask::identity("me")),
+            // Its widget's card too, kept fresh while it runs.
+            Event::Opened => {
+                let count = self.count;
+                Next::state(self).ask(Ask::identity("me")).ask(card(count))
+            }
             Event::Answer { msg, value } if msg == "me" => Next::state(Counter { me: value, ..self }),
             Event::Message { msg, value } => match msg {
-                Msg::Add => Next::state(Counter { count: self.count + 1, ..self }).link(Counter::count),
-                Msg::Reset => Next::state(Counter { count: 0, ..self }).link(Counter::count),
+                Msg::Add => {
+                    let count = self.count + 1;
+                    Next::state(Counter { count, ..self }).link(Counter::count).ask(card(count))
+                }
+                Msg::Reset => Next::state(Counter { count: 0, ..self }).link(Counter::count).ask(card(0)),
                 Msg::Name => Next::state(Counter { name: value.unwrap_or_default(), ..self }),
                 Msg::Notify => {
                     let count = self.count;
@@ -135,6 +148,13 @@ mod tests {
     }
 
     #[test]
+    fn the_count_widget_follows_the_count() {
+        // Rapidkoi's PRP-073: the card follows the count, and opens the counter there.
+        assert_eq!(message(Counter::default(), Msg::Add, None).asks(), &[card(1)]);
+        assert_eq!(message(Counter { count: 4, ..Counter::default() }, Msg::Reset, None).asks(), &[card(0)]);
+    }
+
+    #[test]
     fn notify_me_sends_the_count_and_its_place() {
         let c = message(Counter::default(), Msg::Add, None).into_state();
         assert_eq!(message(c, Msg::Notify, None).asks(), &[notice(1)]);
@@ -143,10 +163,10 @@ mod tests {
     #[test]
     fn it_asks_who_you_are_on_every_open() {
         let opened = Counter::default().handle(Event::Opened);
-        assert_eq!(opened.asks(), &[Ask::identity("me")]);
+        assert_eq!(opened.asks(), &[Ask::identity("me"), card(0)]);
         let c = opened.into_state().handle(Event::Answer { msg: "me".into(), value: Some(vec![0x4f, 0x9a, 1, 2]) }).into_state();
         assert_eq!(label(c.me.as_deref().unwrap()), "User 4f9a");
         // Resumed later: it asks again.
-        assert_eq!(c.handle(Event::Opened).asks(), &[Ask::identity("me")]);
+        assert_eq!(c.handle(Event::Opened).asks(), &[Ask::identity("me"), card(0)]);
     }
 }

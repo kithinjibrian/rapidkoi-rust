@@ -9,6 +9,11 @@ host = "localhost:8000"
 module = "../../target/wasm32-unknown-unknown/release/counter.wasm"
 icon = "icon.png"
 
+# Its widget (Rapidkoi's PRP-073): the person can put it on their new tab.
+[[widgets]]
+name = "count"
+label = "Count"
+
 [publish]
 # Never inside this folder: keygen refuses.
 key = "~/.config/rapidkoi/keys/counter.key"

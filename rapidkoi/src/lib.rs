@@ -111,6 +111,7 @@ mod state;
 mod storage;
 pub mod style;
 mod view;
+pub mod widget;
 
 pub use apps::{Apps, ListedApp};
 pub use blobs::{BlobGet, BlobInfo, BlobList, Step};
@@ -209,6 +210,8 @@ pub enum Ask {
     AppInfo(String, u32),
     /// Open the person's app at this index with Rapidkoi's "Forget this app?" (needs `open_apps`); not answered.
     ForgetApp(String, u32),
+    /// Fill one of this app's widgets (contract 11 addition, PRP-073); not answered.
+    Widget(widget::Widget),
 }
 
 impl Ask {
@@ -269,6 +272,11 @@ impl Ask {
     /// first time; blocked, it's dropped and the app runs on.
     pub fn notify(n: Notify) -> Ask {
         Ask::Notify(n)
+    }
+    /// Fills one of this app's widgets with its newest card (contract 11
+    /// addition): shown only where the person put it, and never said to you.
+    pub fn widget(w: widget::Widget) -> Ask {
+        Ask::Widget(w)
     }
     /// Takes back this app's notification with `key`, once it's no longer true.
     pub fn withdraw(msg: &str, key: &str) -> Ask {
