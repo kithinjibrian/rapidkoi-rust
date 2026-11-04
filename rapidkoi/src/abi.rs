@@ -421,13 +421,13 @@ fn result_with<A: App>(
             Ask::OpenApp(msg, index)
             | Ask::PinApp(msg, index)
             | Ask::UnpinApp(msg, index)
-            | Ask::AppPermissions(msg, index)
+            | Ask::AppInfo(msg, index)
             | Ask::ForgetApp(msg, index) => {
                 let kind = match a {
                     Ask::OpenApp(..) => "open_app",
                     Ask::PinApp(..) => "pin_app",
                     Ask::UnpinApp(..) => "unpin_app",
-                    Ask::AppPermissions(..) => "app_permissions",
+                    Ask::AppInfo(..) => "app_info",
                     _ => "forget_app",
                 };
                 let _ = e.map(3).and_then(|e| e.str("kind")).and_then(|e| e.str(kind));
@@ -581,7 +581,7 @@ mod tests {
             Ask::open_app("o", 1),
             Ask::pin_app("p", 2),
             Ask::unpin_app("u", 3),
-            Ask::app_permissions("s", 4),
+            Ask::app_info("s", 4),
             Ask::forget_app("f", 5),
         ];
         let bytes = result(&asks.iter().cloned().fold(Next::state(S { n: 1 }), Next::ask), &[]);
@@ -595,7 +595,7 @@ mod tests {
         assert_eq!((d.str().unwrap(), d.str().unwrap()), ("kind", "apps"));
         assert_eq!((d.str().unwrap(), d.str().unwrap()), ("msg", "a"));
         let rest =
-            [("open_app", "o", 1), ("pin_app", "p", 2), ("unpin_app", "u", 3), ("app_permissions", "s", 4), ("forget_app", "f", 5)];
+            [("open_app", "o", 1), ("pin_app", "p", 2), ("unpin_app", "u", 3), ("app_info", "s", 4), ("forget_app", "f", 5)];
         for (kind, msg, index) in rest {
             assert_eq!(d.map().unwrap(), Some(3));
             assert_eq!((d.str().unwrap(), d.str().unwrap()), ("kind", kind));
