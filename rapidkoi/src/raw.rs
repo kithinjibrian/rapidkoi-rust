@@ -108,7 +108,7 @@ impl Role {
 }
 
 /// The props that carry a message.
-const MESSAGES: [&str; 3] = ["on_press", "on_change", "on_submit"];
+const MESSAGES: [&str; 4] = ["on_press", "on_context", "on_change", "on_submit"];
 
 /// One node of a screen: a box, a text or a typing box, sending messages of
 /// type `M` (PRP-039). Build them with [`boxed`], [`text`] and [`field`], or
@@ -167,6 +167,15 @@ impl<M: Message> View<M> {
         self.prop("on_press", Val::Raw(bytes_of(&msg)))
     }
 
+    /// A box: the message a right-click, a long press or the Menu key
+    /// (Shift+F10) sends (contract 11 addition, Rapidkoi's PRP-070).
+    /// Rapidkoi opens nothing: what follows is the app's to draw. A box may
+    /// have both this and `on_press`; nested, the innermost answers. It
+    /// replaces a [`View::menu`], since both answer the same right-click.
+    pub fn on_context(self, msg: M) -> View<M> {
+        self.without("menu").prop("on_context", Val::Raw(bytes_of(&msg)))
+    }
+
     /// A box: sends `msg` when `enabled`, else is disabled.
     pub fn on_press_if(self, enabled: bool, msg: M) -> View<M> {
         if enabled { self.on_press(msg) } else { self }
@@ -193,6 +202,7 @@ impl<M: Message> View<M> {
                     Some(m) => (name, Val::Raw(bytes_of(&wrap(m)))),
                     None => (name, Val::Raw(b)),
                 },
+                menu if name == "menu" => (name, crate::menu::rewrapped(menu, &wrap)),
                 other => (name, other),
             })
             .collect();
@@ -215,6 +225,11 @@ impl<M> View<M> {
     pub(crate) fn prop(mut self, name: &'static str, value: Val) -> View<M> {
         self.props.retain(|(n, _)| *n != name);
         self.props.push((name, value));
+        self
+    }
+
+    pub(crate) fn without(mut self, name: &str) -> View<M> {
+        self.props.retain(|(n, _)| *n != name);
         self
     }
 
@@ -413,6 +428,20 @@ mod tests {
         assert_eq!((d.str().unwrap(), d.str().unwrap()), ("padding", "sm"));
         assert_eq!((d.str().unwrap(), d.map().unwrap()), ("hover", Some(1)));
         assert_eq!((d.str().unwrap(), d.str().unwrap()), ("background", "#010203"));
+    }
+
+    #[test]
+    fn a_box_answers_a_right_click_with_its_message() {
+        // Rapidkoi's PRP-070: beside on_press; Rapidkoi opens nothing.
+        let v = boxed().on_press(String::from("open")).on_context(String::from("details"));
+        let bytes = v.encode();
+        let mut d = minicbor::Decoder::new(&bytes);
+        d.map().unwrap();
+        d.str().unwrap();
+        d.str().unwrap();
+        assert_eq!((d.str().unwrap(), d.map().unwrap()), ("props", Some(2)));
+        assert_eq!((d.str().unwrap(), d.str().unwrap()), ("on_press", "open"));
+        assert_eq!((d.str().unwrap(), d.str().unwrap()), ("on_context", "details"));
     }
 
     fn t(s: &str) -> Val {

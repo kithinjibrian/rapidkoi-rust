@@ -99,6 +99,7 @@ mod home;
 #[doc(hidden)]
 #[path = "kinds.rs"]
 pub mod __kinds;
+mod menu;
 mod message;
 mod notify;
 mod parts;
@@ -121,6 +122,7 @@ pub use prefs::{Preference, Prefs};
 pub use storage::Value;
 pub use signin::{Progress, SignIn};
 pub use rapidkoi_derive::{Message, State};
+pub use menu::{item, separator, Choice, MAX_MENU};
 pub use message::Message;
 pub use notify::{FieldValue, Notification, Notifications, Notify};
 pub use parts::{first_name, last_name, time, Now, Part, Show, Time, MAX_PARTS};
@@ -203,8 +205,8 @@ pub enum Ask {
     PinApp(String, u32),
     /// Unpin the person's app at this index (needs the built-in `manage_pins`); not answered.
     UnpinApp(String, u32),
-    /// Open the person's app at this index with Rapidkoi's panel on its permissions (needs `open_apps`); not answered.
-    AppPermissions(String, u32),
+    /// Show Rapidkoi's App info on the person's app at this index (needs `open_apps`); not answered.
+    AppInfo(String, u32),
     /// Open the person's app at this index with Rapidkoi's "Forget this app?" (needs `open_apps`); not answered.
     ForgetApp(String, u32),
 }
@@ -300,9 +302,10 @@ impl Ask {
     pub fn unpin_app(msg: &str, index: u32) -> Ask {
         Ask::UnpinApp(msg.into(), index)
     }
-    /// Asks Rapidkoi to open app `index` with its panel on the app's permissions: the person changes them there.
-    pub fn app_permissions(msg: &str, index: u32) -> Ask {
-        Ask::AppPermissions(msg.into(), index)
+    /// Asks Rapidkoi to show its App info on app `index` (Rapidkoi's PRP-072): the
+    /// person sees and changes its settings there, and the app learns nothing.
+    pub fn app_info(msg: &str, index: u32) -> Ask {
+        Ask::AppInfo(msg.into(), index)
     }
     /// Asks Rapidkoi to open app `index` with its own "Forget this app?": the person decides there.
     pub fn forget_app(msg: &str, index: u32) -> Ask {
