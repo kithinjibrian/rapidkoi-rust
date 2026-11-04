@@ -405,6 +405,7 @@ fn result_with<A: App>(
                 let _ = e.str("index").and_then(|e| e.u32(*index));
             }
             Ask::Notify(n) => n.write(&mut e),
+            Ask::Widget(w) => w.write(&mut e),
             Ask::Withdraw(msg, key) => {
                 let _ = e.map(3).and_then(|e| e.str("kind")).and_then(|e| e.str("withdraw"));
                 let _ = e.str("msg").and_then(|e| e.str(msg));
