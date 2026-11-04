@@ -100,6 +100,43 @@ pub fn list<M>(title: &str, lines: &[&str]) -> View<M> {
     column(kids).style([Spacing::gap(Space::Xs)])
 }
 
+/// The most places one card may hold (Rapidkoi's PRP-074): more stops the app.
+pub const MAX_PLACES: usize = 4;
+
+impl<M> View<M> {
+    /// In a widget's card: a box that opens your app at this place when
+    /// clicked (Rapidkoi's PRP-074), its fields as a link's (at most 16;
+    /// none for your app's start). The rest of the card opens the card's
+    /// own place. At most [`MAX_PLACES`] in a card, never one inside
+    /// another, and never on your app's own screen: Rapidkoi stops it.
+    ///
+    /// ```
+    /// use rapidkoi::{text, widget, View};
+    /// let row: View = widget::place(text("Shopping list"), [("note", 7.into())]);
+    /// ```
+    pub fn open(self, fields: impl IntoIterator<Item = (&'static str, FieldValue)>) -> View<M> {
+        let entries = fields
+            .into_iter()
+            .map(|(name, v)| {
+                let val = match v {
+                    FieldValue::Number(n) => Val::Int(n),
+                    FieldValue::Real(x) => Val::Float(x),
+                    FieldValue::Text(s) => Val::Text(s),
+                    FieldValue::Bool(b) => Val::Bool(b),
+                };
+                (String::from(name), val)
+            })
+            .collect();
+        self.prop("open", Val::Map(entries))
+    }
+}
+
+/// A place in a card: `inside` in a box that opens your app at `fields`
+/// (see [`View::open`]).
+pub fn place<M>(inside: View<M>, fields: impl IntoIterator<Item = (&'static str, FieldValue)>) -> View<M> {
+    column([inside]).open(fields)
+}
+
 /// Where Rapidkoi draws the person's widgets: only Rapidkoi's own new tab
 /// may place it; any other app is stopped.
 #[doc(hidden)]
@@ -153,5 +190,26 @@ mod tests {
         let bytes = v.encode();
         // The title and four lines: five texts.
         assert_eq!(bytes.windows(4).filter(|w| *w == b"text").count(), 5 + 5);
+    }
+
+    #[test]
+    fn a_place_opens_its_fields_and_none_is_the_start() {
+        let bytes = place::<()>(text("Shopping list"), [("note", 7.into())]).encode();
+        let mut d = minicbor::Decoder::new(&bytes);
+        assert_eq!(d.map().unwrap(), Some(3));
+        assert_eq!((d.str().unwrap(), d.str().unwrap()), ("kind", "box"));
+        assert_eq!(d.str().unwrap(), "props");
+        assert_eq!(d.map().unwrap(), Some(1));
+        assert_eq!(d.str().unwrap(), "open");
+        assert_eq!(d.map().unwrap(), Some(1));
+        assert_eq!((d.str().unwrap(), d.i64().unwrap()), ("note", 7));
+        let start = column::<()>([text("Notes")]).open([]).encode();
+        let mut d = minicbor::Decoder::new(&start);
+        d.map().unwrap();
+        d.str().unwrap();
+        d.str().unwrap();
+        d.str().unwrap();
+        d.map().unwrap();
+        assert_eq!((d.str().unwrap(), d.map().unwrap()), ("open", Some(0)));
     }
 }
