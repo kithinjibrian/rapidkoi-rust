@@ -105,6 +105,7 @@ mod notify;
 mod parts;
 mod picture;
 mod prefs;
+mod settings;
 mod signin;
 pub mod raw;
 mod state;
@@ -119,7 +120,8 @@ pub use abi::{Event, __alloc, __finish, __input, __CONTRACT_VERSION};
 pub use fetch::{header, Request};
 pub use files::{FileOpen, FileSave, FileSaveAs, MAX_ACCEPT};
 pub use home::{Place, Recent, RecentPlace, Session};
-pub use prefs::{Preference, Prefs};
+pub use prefs::{Preference, Prefs, Start};
+pub use settings::{Publishers, SignedIn, Trusted, You};
 pub use storage::Value;
 pub use signin::{Progress, SignIn};
 pub use rapidkoi_derive::{Message, State};
@@ -137,7 +139,7 @@ pub use alloc::vec::Vec as __Vec;
 pub use alloc::string::String as __String;
 pub use raw::View;
 pub use style::Space;
-pub use view::{button, checkbox, column, fit, input, layers, row, spacer, tabs, text, text_area, text_of, wrap};
+pub use view::{button, checkbox, column, fit, input, layers, row, slider, spacer, tabs, text, text_area, text_of, wrap};
 use alloc::string::String;
 use alloc::vec::Vec;
 
@@ -212,6 +214,12 @@ pub enum Ask {
     ForgetApp(String, u32),
     /// Fill one of this app's widgets (contract 11 addition, PRP-073); not answered.
     Widget(widget::Widget),
+    /// The person's name and the apps they're signed in to (needs the built-in `read_you`).
+    You(String),
+    /// The publishers' keys the person trusts (needs the built-in `read_publishers`).
+    Publishers(String),
+    /// Change the name every app shows (needs the built-in `change_settings`); not answered.
+    SetName(String, String, String),
 }
 
 impl Ask {
@@ -427,6 +435,21 @@ impl Ask {
     /// Asks Rapidkoi to change one of the person's choices (Rapidkoi's own Settings app only).
     pub fn set_preference(msg: &str, p: Preference) -> Ask {
         Ask::SetPreference(msg.into(), p)
+    }
+    /// Asks for the person's name and the apps they're signed in to: an
+    /// [`Event::Data`] to read with [`You::read`] (contract 11 addition, Rapidkoi's own Settings only).
+    pub fn you(msg: &str) -> Ask {
+        Ask::You(msg.into())
+    }
+    /// Asks for the keys the person trusts: an [`Event::Data`] to read with
+    /// [`Publishers::read`] (contract 11 addition, Rapidkoi's own Settings only).
+    pub fn publishers(msg: &str) -> Ask {
+        Ask::Publishers(msg.into())
+    }
+    /// Asks Rapidkoi to change the name every app shows, each part at most
+    /// 64 characters (contract 11 addition, Rapidkoi's own Settings only).
+    pub fn set_name(msg: &str, first: &str, last: &str) -> Ask {
+        Ask::SetName(msg.into(), first.into(), last.into())
     }
 }
 

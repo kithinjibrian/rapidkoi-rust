@@ -181,7 +181,8 @@ impl<M: Message> View<M> {
         if enabled { self.on_press(msg) } else { self }
     }
 
-    /// A typing box: the message each edit sends; `handle` gets the new text as `value`.
+    /// A typing box or a slider: the message each edit sends; `handle`
+    /// gets the new text, or the slider's number in decimal, as `value`.
     pub fn on_change(self, msg: M) -> View<M> {
         self.prop("on_change", Val::Raw(bytes_of(&msg)))
     }
@@ -303,6 +304,11 @@ impl<M> View<M> {
         self.prop("disabled", Val::Bool(on))
     }
 
+    /// A slider: the room between its stops (at least 1).
+    pub fn step(self, n: i64) -> View<M> {
+        self.prop("step", Val::Int(n))
+    }
+
     /// What a screen reader says, when the text isn't enough.
     pub fn label(self, s: &str) -> View<M> {
         self.prop("label", Val::Text(String::from(s)))
@@ -388,6 +394,14 @@ pub fn text_of<M>(parts: impl IntoIterator<Item = crate::Part>) -> View<M> {
     View::new("text").prop("parts", Val::Array(crate::parts::vals(parts)))
 }
 
+/// A slider from `min` to `max` showing `value` (contract 11 addition,
+/// Rapidkoi's PRP-075); give it a [`View::label`] and [`View::on_change`]:
+/// each move sends the message with the new number, in decimal, as `value`.
+/// Without `on_change` it's disabled.
+pub fn slider<M>(min: i64, max: i64, value: i64) -> View<M> {
+    View::new("slider").prop("min", Val::Int(min)).prop("max", Val::Int(max)).prop("value", Val::Int(value))
+}
+
 /// A typing box showing `value`; give it [`View::on_change`].
 pub fn field<M>(value: &str) -> View<M> {
     View::new("input").prop("value", Val::Text(String::from(value)))
@@ -428,6 +442,23 @@ mod tests {
         assert_eq!((d.str().unwrap(), d.str().unwrap()), ("padding", "sm"));
         assert_eq!((d.str().unwrap(), d.map().unwrap()), ("hover", Some(1)));
         assert_eq!((d.str().unwrap(), d.str().unwrap()), ("background", "#010203"));
+    }
+
+    #[test]
+    fn a_slider_encodes_its_range_step_label_and_message() {
+        // Rapidkoi's PRP-075: a contract 11 addition.
+        let v = slider(0, 7, 2).step(1).label("Text size").on_change(String::from("size"));
+        let bytes = v.encode();
+        let mut d = minicbor::Decoder::new(&bytes);
+        assert_eq!(d.map().unwrap(), Some(2));
+        assert_eq!((d.str().unwrap(), d.str().unwrap()), ("kind", "slider"));
+        assert_eq!((d.str().unwrap(), d.map().unwrap()), ("props", Some(6)));
+        assert_eq!((d.str().unwrap(), d.i64().unwrap()), ("min", 0));
+        assert_eq!((d.str().unwrap(), d.i64().unwrap()), ("max", 7));
+        assert_eq!((d.str().unwrap(), d.i64().unwrap()), ("value", 2));
+        assert_eq!((d.str().unwrap(), d.i64().unwrap()), ("step", 1));
+        assert_eq!((d.str().unwrap(), d.str().unwrap()), ("label", "Text size"));
+        assert_eq!((d.str().unwrap(), d.str().unwrap()), ("on_change", "size"));
     }
 
     #[test]

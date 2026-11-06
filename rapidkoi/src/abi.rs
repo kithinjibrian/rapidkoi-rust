@@ -392,6 +392,9 @@ fn result_with<A: App>(
                     crate::Preference::TextSize(n) => {
                         e.str("name").and_then(|e| e.str("text_size")).and_then(|e| e.str("value")).and_then(|e| e.u16(*n))
                     }
+                    crate::Preference::Start(s) => e.str("name").and_then(|e| e.str("start")).and_then(|e| e.str("value")).and_then(
+                        |e| e.str(if *s == crate::Start::Restore { "restore" } else { "new_tab" }),
+                    ),
                 };
             }
             Ask::OpenPin(msg, index) => {
@@ -419,6 +422,14 @@ fn result_with<A: App>(
                 let _ = e.str("index").and_then(|e| e.u32(*index));
             }
             Ask::Apps(msg) => plain(&mut e, "apps", msg),
+            Ask::You(msg) => plain(&mut e, "you", msg),
+            Ask::Publishers(msg) => plain(&mut e, "publishers", msg),
+            Ask::SetName(msg, first, last) => {
+                let _ = e.map(4).and_then(|e| e.str("kind")).and_then(|e| e.str("set_name"));
+                let _ = e.str("msg").and_then(|e| e.str(msg));
+                let _ = e.str("first").and_then(|e| e.str(first));
+                let _ = e.str("last").and_then(|e| e.str(last));
+            }
             Ask::OpenApp(msg, index)
             | Ask::PinApp(msg, index)
             | Ask::UnpinApp(msg, index)
@@ -603,6 +614,47 @@ mod tests {
             assert_eq!((d.str().unwrap(), d.str().unwrap()), ("msg", msg));
             assert_eq!((d.str().unwrap(), d.u32().unwrap()), ("index", index));
         }
+    }
+
+    #[test]
+    fn settings_asks_are_written() {
+        #[derive(Default, crate::State)]
+        struct S {
+            n: u32,
+        }
+        impl App for S {
+            type Msg = String;
+            fn handle(self, _: Event) -> Next<Self> { Next::state(self) }
+            fn view(&self) -> crate::View { crate::text("") }
+        }
+        let asks = [
+            Ask::you("y"),
+            Ask::publishers("p"),
+            Ask::set_name("n", "Ada", "L"),
+            Ask::set_preference("s", crate::Preference::Start(crate::Start::Restore)),
+        ];
+        let bytes = result(&asks.iter().cloned().fold(Next::state(S { n: 1 }), Next::ask), &[]);
+        let mut d = Decoder::new(&bytes);
+        d.map().unwrap();
+        d.str().unwrap();
+        d.skip().unwrap();
+        d.str().unwrap();
+        assert_eq!(d.array().unwrap(), Some(4));
+        for (kind, msg) in [("you", "y"), ("publishers", "p")] {
+            assert_eq!(d.map().unwrap(), Some(2));
+            assert_eq!((d.str().unwrap(), d.str().unwrap()), ("kind", kind));
+            assert_eq!((d.str().unwrap(), d.str().unwrap()), ("msg", msg));
+        }
+        assert_eq!(d.map().unwrap(), Some(4));
+        assert_eq!((d.str().unwrap(), d.str().unwrap()), ("kind", "set_name"));
+        assert_eq!((d.str().unwrap(), d.str().unwrap()), ("msg", "n"));
+        assert_eq!((d.str().unwrap(), d.str().unwrap()), ("first", "Ada"));
+        assert_eq!((d.str().unwrap(), d.str().unwrap()), ("last", "L"));
+        assert_eq!(d.map().unwrap(), Some(4));
+        assert_eq!((d.str().unwrap(), d.str().unwrap()), ("kind", "set_preference"));
+        assert_eq!((d.str().unwrap(), d.str().unwrap()), ("msg", "s"));
+        assert_eq!((d.str().unwrap(), d.str().unwrap()), ("name", "start"));
+        assert_eq!((d.str().unwrap(), d.str().unwrap()), ("value", "restore"));
     }
 
     #[test]
