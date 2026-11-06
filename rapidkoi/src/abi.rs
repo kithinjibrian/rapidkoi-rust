@@ -424,6 +424,8 @@ fn result_with<A: App>(
             Ask::Apps(msg) => plain(&mut e, "apps", msg),
             Ask::You(msg) => plain(&mut e, "you", msg),
             Ask::Publishers(msg) => plain(&mut e, "publishers", msg),
+            Ask::BackupWords(msg) => plain(&mut e, "backup_words", msg),
+            Ask::UseBackupWords(msg) => plain(&mut e, "use_backup_words", msg),
             Ask::SetName(msg, first, last) => {
                 let _ = e.map(4).and_then(|e| e.str("kind")).and_then(|e| e.str("set_name"));
                 let _ = e.str("msg").and_then(|e| e.str(msg));
@@ -655,6 +657,32 @@ mod tests {
         assert_eq!((d.str().unwrap(), d.str().unwrap()), ("msg", "s"));
         assert_eq!((d.str().unwrap(), d.str().unwrap()), ("name", "start"));
         assert_eq!((d.str().unwrap(), d.str().unwrap()), ("value", "restore"));
+    }
+
+    #[test]
+    fn backup_asks_are_written() {
+        #[derive(Default, crate::State)]
+        struct S {
+            n: u32,
+        }
+        impl App for S {
+            type Msg = String;
+            fn handle(self, _: Event) -> Next<Self> { Next::state(self) }
+            fn view(&self) -> crate::View { crate::text("") }
+        }
+        let asks = [Ask::backup_words("b"), Ask::use_backup_words("u")];
+        let bytes = result(&asks.iter().cloned().fold(Next::state(S { n: 1 }), Next::ask), &[]);
+        let mut d = Decoder::new(&bytes);
+        d.map().unwrap();
+        d.str().unwrap();
+        d.skip().unwrap();
+        d.str().unwrap();
+        assert_eq!(d.array().unwrap(), Some(2));
+        for (kind, msg) in [("backup_words", "b"), ("use_backup_words", "u")] {
+            assert_eq!(d.map().unwrap(), Some(2));
+            assert_eq!((d.str().unwrap(), d.str().unwrap()), ("kind", kind));
+            assert_eq!((d.str().unwrap(), d.str().unwrap()), ("msg", msg));
+        }
     }
 
     #[test]

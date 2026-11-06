@@ -32,6 +32,8 @@ pub struct You {
     pub first: String,
     pub last: String,
     pub apps: Vec<SignedIn>,
+    /// Whether the person has written down their backup words (Rapidkoi's PRP-076).
+    pub backed_up: bool,
 }
 
 /// A publisher's key the person trusts.
@@ -65,6 +67,7 @@ impl You {
             match d.str().ok()? {
                 "first" => out.first = String::from(d.str().ok()?),
                 "last" => out.last = String::from(d.str().ok()?),
+                "backed_up" => out.backed_up = d.bool().ok()?,
                 "apps" => {
                     let k = d.array().ok()??;
                     for _ in 0..k {
@@ -169,9 +172,17 @@ mod tests {
         // Something a later Rapidkoi adds is skipped.
         e.str("later").unwrap().u32(1).unwrap();
         let you = You::read(&e.into_writer()).unwrap();
+        assert!(!you.backed_up);
         assert_eq!((you.first.as_str(), you.last.as_str(), you.apps.len()), ("Ada", "L", 1));
         let a = &you.apps[0];
         assert_eq!((a.name.as_str(), a.key.as_str(), a.since), ("Notes", "4b2e9d71", 1_760_000_000_000));
+    }
+
+    #[test]
+    fn backed_up_reads() {
+        let mut e = Encoder::new(Vec::new());
+        e.map(1).unwrap().str("backed_up").unwrap().bool(true).unwrap();
+        assert!(You::read(&e.into_writer()).unwrap().backed_up);
     }
 
     #[test]
