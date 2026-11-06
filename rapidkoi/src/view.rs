@@ -92,6 +92,20 @@ impl<M> View<M> {
     }
 }
 
+/// A slider from `min` to `max` showing `value` (contract 11 addition,
+/// Rapidkoi's PRP-075): give it a label and [`View::on_change`]; the new
+/// number comes back in decimal as the message's `value`.
+///
+/// ```
+/// use rapidkoi::{slider, Message, View};
+/// #[derive(Message)]
+/// enum Msg { Size }
+/// let size: View<Msg> = slider(0, 7, 2).label("Text size").on_change(Msg::Size);
+/// ```
+pub fn slider<M>(min: i64, max: i64, value: i64) -> View<M> {
+    crate::raw::slider(min, max, value)
+}
+
 /// A line of text.
 pub fn text<M>(s: &str) -> View<M> {
     crate::raw::text(s)
