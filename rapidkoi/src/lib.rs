@@ -220,6 +220,10 @@ pub enum Ask {
     Publishers(String),
     /// Change the name every app shows (needs the built-in `change_settings`); not answered.
     SetName(String, String, String),
+    /// Rapidkoi shows the person their backup words, once, in its own card (needs the built-in `manage_identity`); not answered.
+    BackupWords(String),
+    /// Rapidkoi asks the person for their backup words, in its own card (needs the built-in `manage_identity`); not answered.
+    UseBackupWords(String),
 }
 
 impl Ask {
@@ -448,6 +452,19 @@ impl Ask {
     }
     /// Asks Rapidkoi to change the name every app shows, each part at most
     /// 64 characters (contract 11 addition, Rapidkoi's own Settings only).
+    /// Asks Rapidkoi to show the person their backup words in its own card,
+    /// once (contract 11 addition, Rapidkoi's PRP-076; Rapidkoi's own
+    /// Settings only). The app never sees a word: it learns only, from
+    /// [`You::backed_up`], whether the person is backed up.
+    pub fn backup_words(msg: &str) -> Ask {
+        Ask::BackupWords(msg.into())
+    }
+    /// Asks Rapidkoi to take the person's backup words in its own card, and
+    /// become who they say (contract 11 addition, Rapidkoi's PRP-076;
+    /// Rapidkoi's own Settings only). The app never sees a word.
+    pub fn use_backup_words(msg: &str) -> Ask {
+        Ask::UseBackupWords(msg.into())
+    }
     pub fn set_name(msg: &str, first: &str, last: &str) -> Ask {
         Ask::SetName(msg.into(), first.into(), last.into())
     }
