@@ -1,7 +1,8 @@
 //! Who the person is and whom they trust (contract 11 addition, Rapidkoi's
 //! PRP-075), read by Rapidkoi's own Settings with the built-in `read_you`
-//! and `read_publishers`. Public facts only: names, public keys as hex,
-//! hosts and dates. Never a secret.
+//! and `read_publishers`. Public facts only: names, keys' fingerprints as
+//! Rapidkoi shows them everywhere (`7f3a-91c2-0b5e-d4a8`), hosts and
+//! dates. Never a secret, never a key itself.
 
 use alloc::string::String;
 use alloc::vec::Vec;
@@ -21,7 +22,7 @@ pub struct SignedIn {
     pub last: String,
     /// When the person first signed in, in milliseconds since 1970; 0 when not known.
     pub since: i64,
-    /// The person's public key for it, as hex; empty when Rapidkoi couldn't work it out.
+    /// The person's public key for it, as its fingerprint (`7f3a-91c2-0b5e-d4a8`); empty when Rapidkoi couldn't work it out.
     pub key: String,
 }
 
@@ -38,7 +39,7 @@ pub struct You {
 pub struct Trusted {
     /// The host it signs for.
     pub host: String,
-    /// The key, as hex.
+    /// The key's fingerprint (`7f3a-91c2-0b5e-d4a8`), as Rapidkoi's shield shows it.
     pub key: String,
     /// When it was first trusted, in milliseconds since 1970; 0 when not known.
     pub since: i64,
